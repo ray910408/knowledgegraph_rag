@@ -1,0 +1,512 @@
+import { useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { fetchAnalysis } from "./api";
+import type {
+  AnalysisResponse,
+  EvidenceBundle,
+  EvidencePath,
+  InputKind,
+  RequiredConcept,
+  RetrievalMode,
+  RetrievalTrace,
+  SimilarProblem,
+  TraceCandidate
+} from "./types";
+
+const sampleInput =
+  "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。需要說明該使用哪些演算法與資料結構。";
+
+const modes: Array<{ id: RetrievalMode; label: string }> = [
+  { id: "hybrid", label: "Hybrid" },
+  { id: "vector", label: "Vector" },
+  { id: "graph", label: "Graph" }
+];
+
+const flowSteps = ["輸入", "查詢理解", "三路檢索", "Fusion / Rerank", "Evidence / Context", "回答"];
+
+function clampTopK(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(8, Math.max(1, Math.trunc(value)));
+}
+
+function inputKindLabel(kind: InputKind): string {
+  if (kind === "cpp") {
+    return "C++ 程式碼";
+  }
+  if (kind === "python") {
+    return "Python 程式碼";
+  }
+  if (kind === "problem") {
+    return "題目敘述";
+  }
+  return "一般查詢";
+}
+
+function conceptKindLabel(kind: RequiredConcept["kind"]): string {
+  if (kind === "algorithm") {
+    return "演算法";
+  }
+  if (kind === "data_structure") {
+    return "資料結構";
+  }
+  if (kind === "pattern") {
+    return "題型模式";
+  }
+  return "概念";
+}
+
+function formatScore(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "-";
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+export default function App() {
+  const [inputText, setInputText] = useState(sampleInput);
+  const [mode, setMode] = useState<RetrievalMode>("hybrid");
+  const [topK, setTopK] = useState(4);
+  const [debug, setDebug] = useState(true);
+  const [response, setResponse] = useState<AnalysisResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const latestRequestId = useRef(0);
+
+  async function handleAnalyze() {
+    const requestId = latestRequestId.current + 1;
+    latestRequestId.current = requestId;
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const nextResponse = await fetchAnalysis({ inputText, mode, topK, debug });
+      if (requestId !== latestRequestId.current) {
+        return;
+      }
+      setResponse(nextResponse);
+    } catch (caughtError) {
+      if (requestId !== latestRequestId.current) {
+        return;
+      }
+      setError(caughtError instanceof Error ? caughtError.message : "分析失敗，請稍後再試。");
+    } finally {
+      if (requestId === latestRequestId.current) {
+        setIsLoading(false);
+      }
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Knowledge Graph + Hybrid RAG</p>
+          <h1>程式題庫查詢工作台</h1>
+        </div>
+        <div className="system-status" aria-live="polite">
+          <span className={response?.usedMockData ? "status-dot mock" : "status-dot"} />
+          {response?.usedMockData ? "Mock fallback" : "API ready"}
+        </div>
+      </header>
+
+      <section className="workspace-grid">
+        <aside className="panel input-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">輸入</p>
+              <h2>題目 / 題號 / 關鍵字 / 程式碼</h2>
+            </div>
+            <button className="ghost-button" type="button" onClick={() => setInputText(sampleInput)}>
+              載入範例
+            </button>
+          </div>
+
+          <textarea
+            aria-label="題目、題號、關鍵字或程式碼"
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            placeholder="輸入題目敘述、LeetCode / CPE 題號、關鍵字，或貼上 C++ / Python 程式碼。"
+            spellCheck={false}
+          />
+
+          <div className="control-group">
+            <label>檢索模式</label>
+            <div className="segmented-control" role="group" aria-label="檢索模式">
+              {modes.map((item) => (
+                <button
+                  key={item.id}
+                  aria-pressed={mode === item.id}
+                  className={mode === item.id ? "active" : ""}
+                  type="button"
+                  onClick={() => setMode(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="control-row">
+            <label htmlFor="top-k">候選數</label>
+            <input
+              id="top-k"
+              min="1"
+              max="8"
+              type="number"
+              value={topK}
+              onChange={(event) => setTopK((current) => clampTopK(Number(event.target.value), current))}
+            />
+          </div>
+
+          <label className="check-row">
+            <input checked={debug} type="checkbox" onChange={(event) => setDebug(event.target.checked)} />
+            顯示 context preview
+          </label>
+
+          <button className="primary-button" type="button" onClick={handleAnalyze} disabled={isLoading}>
+            {isLoading ? "分析中..." : "執行查詢"}
+          </button>
+
+          {error && <p className="error-text">{error}</p>}
+        </aside>
+
+        <section className="panel result-panel" aria-live="polite">
+          {response ? <AnalysisResult response={response} /> : <EmptyState />}
+        </section>
+
+        <section className="side-stack">
+          <ModelPanel response={response} />
+          <EvidencePathPanel paths={response?.evidencePaths ?? []} />
+          <ContextPanel contextPreview={response?.contextPreview} />
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="empty-state">
+      <h2>等待查詢</h2>
+      <p>結果會依照線上查詢流程呈現。</p>
+    </div>
+  );
+}
+
+function AnalysisResult({ response }: { response: AnalysisResponse }) {
+  const trace = response.retrievalTrace;
+  const evidence = response.evidenceBundle;
+
+  return (
+    <div className="analysis-result">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">線上查詢流程</p>
+          <h2>{inputKindLabel(response.inputKind)}</h2>
+        </div>
+        <span className="query-id">{response.queryId}</span>
+      </div>
+
+      <FlowStrip />
+
+      <OutputBlock title="回答">
+        <p className="problem-type">{response.problemType}</p>
+        <p>{response.similarityReason}</p>
+      </OutputBlock>
+
+      <QueryUnderstandingPanel trace={trace} />
+      <RetrievalPanel trace={trace} />
+      <FusionPanel trace={trace} />
+      <EvidenceBundlePanel evidence={evidence} />
+
+      <OutputBlock title="必要概念">
+        <div className="concept-grid">
+          {response.requiredConcepts.map((concept) => (
+            <article className="concept-card" key={concept.id}>
+              <div>
+                <h3>{concept.name}</h3>
+                <span>{conceptKindLabel(concept.kind)}</span>
+              </div>
+              <p>{concept.description}</p>
+            </article>
+          ))}
+        </div>
+      </OutputBlock>
+
+      <OutputBlock title="相似題">
+        <div className="similar-list">
+          {response.similarProblems.map((problem) => (
+            <SimilarProblemCard key={`${problem.source}-${problem.id}`} problem={problem} />
+          ))}
+        </div>
+      </OutputBlock>
+
+      <TwoColumnLists
+        leftTitle="解題提示"
+        leftItems={response.solvingHints}
+        rightTitle="常見錯誤"
+        rightItems={response.commonMistakes}
+      />
+    </div>
+  );
+}
+
+function FlowStrip() {
+  return (
+    <ol className="flow-strip">
+      {flowSteps.map((step) => (
+        <li key={step}>{step}</li>
+      ))}
+    </ol>
+  );
+}
+
+function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
+  const understanding = trace?.queryUnderstanding;
+  const entities = trace?.entityLinking ?? [];
+
+  return (
+    <OutputBlock title="查詢理解">
+      <div className="kv-grid">
+        <div>
+          <span>Intent</span>
+          <strong>{understanding?.intent ?? "-"}</strong>
+        </div>
+        <div>
+          <span>Input kind</span>
+          <strong>{understanding?.inputKind ?? "-"}</strong>
+        </div>
+        <div>
+          <span>Keywords</span>
+          <strong>{understanding?.keywords?.join(", ") || "-"}</strong>
+        </div>
+      </div>
+      <div className="chips">
+        {entities.map((entity, index) => (
+          <span key={`${asText(entity.entityId)}-${index}`}>
+            {asText(entity.name) || asText(entity.entityId) || "entity"}
+          </span>
+        ))}
+      </div>
+    </OutputBlock>
+  );
+}
+
+function RetrievalPanel({ trace }: { trace?: RetrievalTrace }) {
+  return (
+    <OutputBlock title="三路檢索">
+      <div className="retrieval-grid">
+        <CandidateList title="Vector Search / Qdrant" candidates={trace?.vectorCandidates ?? []} />
+        <CandidateList title="Graph Search / Neo4j" candidates={trace?.graphCandidates ?? []} />
+        <CandidateList title="BM25 Search" candidates={trace?.bm25Candidates ?? []} />
+      </div>
+    </OutputBlock>
+  );
+}
+
+function FusionPanel({ trace }: { trace?: RetrievalTrace }) {
+  return (
+    <OutputBlock title="Hybrid Fusion / Reranker">
+      <div className="retrieval-grid two">
+        <CandidateList title="Fusion scores" candidates={trace?.fusionScores ?? []} />
+        <CandidateList title="Reranker scores" candidates={trace?.rerankerScores ?? []} />
+      </div>
+    </OutputBlock>
+  );
+}
+
+function EvidenceBundlePanel({ evidence }: { evidence?: EvidenceBundle }) {
+  if (!evidence) {
+    return null;
+  }
+
+  return (
+    <OutputBlock title="Evidence Builder">
+      <div className="evidence-bundle">
+        <EvidenceList title="Algorithm" items={evidence.algorithmEvidence} />
+        <EvidenceList title="Data Structure" items={evidence.dataStructureEvidence} />
+        <EvidenceList title="Pattern" items={evidence.patternEvidence} />
+        <EvidenceList title="Common Mistakes" items={evidence.commonMistakes} />
+      </div>
+    </OutputBlock>
+  );
+}
+
+function EvidenceList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="evidence-list">
+      <span>{title}</span>
+      {items.length > 0 ? <strong>{items.join(", ")}</strong> : <strong>-</strong>}
+    </div>
+  );
+}
+
+function CandidateList({ title, candidates }: { title: string; candidates: TraceCandidate[] }) {
+  return (
+    <div className="candidate-list">
+      <h3>{title}</h3>
+      {candidates.length === 0 ? (
+        <p className="muted">沒有候選。</p>
+      ) : (
+        <ol>
+          {candidates.slice(0, 4).map((candidate) => (
+            <li key={`${title}-${candidate.id}`}>
+              <div>
+                <strong>{candidate.title || candidate.id}</strong>
+                <span>{candidate.id}</span>
+              </div>
+              <b>{formatScore(candidate.score)}</b>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function OutputBlock({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="output-block">
+      <h2>{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function SimilarProblemCard({ problem }: { problem: SimilarProblem }) {
+  return (
+    <article className="similar-card">
+      <div className="similar-heading">
+        <span className="source-pill">{problem.source}</span>
+        <h3>
+          {problem.id} - {problem.title}
+        </h3>
+      </div>
+      <p>{problem.reason}</p>
+      {problem.answerHint && <small>{problem.answerHint}</small>}
+      <div className="chips">
+        {problem.sharedConcepts.map((concept) => (
+          <span key={concept}>{concept}</span>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function TwoColumnLists({
+  leftTitle,
+  leftItems,
+  rightTitle,
+  rightItems
+}: {
+  leftTitle: string;
+  leftItems: string[];
+  rightTitle: string;
+  rightItems: string[];
+}) {
+  return (
+    <div className="two-column-lists">
+      <OutputBlock title={leftTitle}>
+        <OrderedItems items={leftItems} />
+      </OutputBlock>
+      <OutputBlock title={rightTitle}>
+        <OrderedItems items={rightItems} />
+      </OutputBlock>
+    </div>
+  );
+}
+
+function OrderedItems({ items }: { items: string[] }) {
+  return (
+    <ol className="ordered-items">
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ol>
+  );
+}
+
+function ModelPanel({ response }: { response: AnalysisResponse | null }) {
+  const config = response?.retrievalConfig;
+
+  return (
+    <section className="panel model-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">模型設定</p>
+          <h2>Provider / Adapter</h2>
+        </div>
+      </div>
+      <dl className="model-list">
+        <div>
+          <dt>Embedding</dt>
+          <dd>{config?.embeddingModel ?? "BAAI/bge-m3"}</dd>
+        </div>
+        <div>
+          <dt>Reranker</dt>
+          <dd>{config?.rerankerModel ?? "BAAI/bge-reranker-v2-m3"}</dd>
+        </div>
+        <div>
+          <dt>Language</dt>
+          <dd>{config?.language ?? "zh-Hant"}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function EvidencePathPanel({ paths }: { paths: EvidencePath[] }) {
+  return (
+    <section className="panel evidence-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Graph Evidence</p>
+          <h2>證據路徑</h2>
+        </div>
+      </div>
+
+      {paths.length === 0 ? (
+        <p className="muted">尚無證據路徑。</p>
+      ) : (
+        paths.map((path) => (
+          <article className="path-card" key={path.title}>
+            <h3>{path.title}</h3>
+            <div className="node-chain">
+              {path.nodes.map((node, index) => (
+                <span key={`${path.title}-${node.id}-${index}`} className={`node-pill ${node.type}`}>
+                  {node.label}
+                  {index < path.nodes.length - 1 && <span className="connector">{"->"}</span>}
+                </span>
+              ))}
+            </div>
+            <ul className="edge-list">
+              {path.edges.map((edge) => (
+                <li key={`${path.title}-${edge.from}-${edge.to}-${edge.relation}`}>
+                  <span>{edge.relation}</span>
+                  <strong>{formatScore(edge.weight)}</strong>
+                </li>
+              ))}
+            </ul>
+          </article>
+        ))
+      )}
+    </section>
+  );
+}
+
+function ContextPanel({ contextPreview }: { contextPreview?: string }) {
+  return (
+    <section className="panel context-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Context Builder</p>
+          <h2>LLM Prompt Context</h2>
+        </div>
+      </div>
+      {contextPreview ? <pre>{contextPreview}</pre> : <p className="muted">Debug mode 關閉。</p>}
+    </section>
+  );
+}
