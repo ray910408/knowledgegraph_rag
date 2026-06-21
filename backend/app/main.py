@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from .analysis import analyze_programming_input
+from .analysis import analyze_programming_input, load_programming_dataset
 from .demo import build_demo_repositories, recommend_demo_techniques
+from .retrieval.pipeline import ContextBuilder, EvidenceBuilder, OnlineQueryPipeline
 
 
 RecommendationMode = Literal["hybrid", "vector", "graph"]
@@ -83,6 +84,10 @@ class RecommendationResponse(BaseModel):
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    problem_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("problemId", "problem_id"),
+    )
     input: str | None = None
     problem_text: str | None = Field(
         default=None,
@@ -145,6 +150,9 @@ class AnalysisResponse(BaseModel):
     commonMistakes: list[str]
     evidencePaths: list[AnalysisEvidencePathResponse]
     retrievalConfig: RetrievalConfigResponse
+    retrievalTrace: dict[str, Any] | None = None
+    evidenceBundle: dict[str, Any] | None = None
+    contextPreview: str | None = None
 
 
 app = FastAPI(title="Explainable Programming GraphRAG", version="0.1.0")
@@ -207,10 +215,18 @@ def recommendations(request: RecommendationRequest) -> RecommendationResponse:
     )
 
 
-@app.post("/api/v1/analysis", response_model=AnalysisResponse)
-@app.post("/api/analysis", response_model=AnalysisResponse)
-def analysis(request: AnalysisRequest) -> AnalysisResponse:
-    text = (request.input or request.problem_text or request.statement or request.code or "").strip()
+@app.post("/api/v1/analysis", response_model=AnalysisResponse, response_model_exclude_none=True)
+@app.post("/api/analysis", response_model=AnalysisResponse, response_model_exclude_none=True)
+def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
+    resolved_problem_text = _analysis_problem_text(request.problem_id)
+    text = (
+        request.input
+        or request.problem_text
+        or request.statement
+        or request.code
+        or resolved_problem_text
+        or ""
+    ).strip()
     if not text:
         raise HTTPException(status_code=400, detail="input, problemText, statement, or code is required")
 
@@ -218,6 +234,16 @@ def analysis(request: AnalysisRequest) -> AnalysisResponse:
         result = analyze_programming_input(text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    pipeline_result = OnlineQueryPipeline().run(text, top_k=5)
+    evidence_bundle = EvidenceBuilder().build(
+        pipeline_result.reranked_candidates,
+        pipeline_result.graph_paths,
+    )
+    context_preview = ContextBuilder().build(
+        pipeline_result.query_understanding,
+        evidence_bundle,
+    )
 
     return AnalysisResponse(
         queryId=result.query_id,
@@ -277,7 +303,19 @@ def analysis(request: AnalysisRequest) -> AnalysisResponse:
             rerankerModel=result.retrieval_config.reranker_model,
             language=result.retrieval_config.language,
         ),
+        retrievalTrace=pipeline_result.trace.to_mapping(),
+        evidenceBundle=evidence_bundle.to_mapping(),
+        contextPreview=context_preview if debug else None,
     )
+
+
+def _analysis_problem_text(problem_id: str | None) -> str | None:
+    if problem_id is None:
+        return None
+    for problem in load_programming_dataset():
+        if problem.id == problem_id or problem.source_id == problem_id:
+            return problem.statement
+    raise HTTPException(status_code=404, detail=f"unknown problemId: {problem_id}")
 
 
 def _flatten_paths(graph, recommendations_) -> list[EvidencePathResponse]:

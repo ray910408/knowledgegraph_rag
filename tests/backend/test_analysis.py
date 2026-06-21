@@ -31,6 +31,8 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
         "commonMistakes",
         "evidencePaths",
         "retrievalConfig",
+        "retrievalTrace",
+        "evidenceBundle",
     }
     assert payload["usedMockData"] is False
     assert payload["inputKind"] == "problem"
@@ -137,6 +139,42 @@ def test_analysis_response_includes_retrieval_model_config_contract():
         "rerankerModel": "BAAI/bge-reranker-v2-m3",
         "language": "zh-Hant",
     }
+
+
+def test_analysis_response_includes_trace_and_evidence_without_context_by_default():
+    client = TestClient(app)
+
+    response = client.post("/api/analysis", json={"input": "unweighted graph shortest path BFS"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "retrievalTrace" in payload
+    assert "evidenceBundle" in payload
+    assert "contextPreview" not in payload
+    assert payload["retrievalTrace"]["queryUnderstanding"]["intent"] == "problem_search"
+    assert payload["evidenceBundle"]["similarProblems"]
+
+
+def test_analysis_debug_mode_includes_context_preview():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "unweighted graph shortest path BFS"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "contextPreview" in payload
+    assert "Query Understanding" in payload["contextPreview"]
+
+
+def test_analysis_unknown_explicit_problem_id_returns_404():
+    client = TestClient(app)
+
+    response = client.post("/api/analysis", json={"problemId": "leetcode-404"})
+
+    assert response.status_code == 404
 
 
 def test_dataset_loader_contains_clean_traditional_chinese_answers_and_hints():
