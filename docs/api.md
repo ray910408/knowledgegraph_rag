@@ -28,22 +28,25 @@ Request body：
 }
 ```
 
-也支援：
+相容欄位：
 
 ```text
+input
 problemText
 statement
 code
 problemId
 ```
 
-`problemId` 若明確指定但找不到，回 `404`。沒有 `problemId` 的一般文字輸入會走 query search，不會回 404。
+行為：
 
-空輸入回 `400`。
+- 空輸入回 `400`。
+- 若指定 `problemId` 且不存在，回 `404`。
+- 若沒有指定 `problemId`，一般文字會走 query search。
 
 ### Analysis Response
 
-既有欄位保留：
+保留既有欄位：
 
 ```text
 queryId
@@ -59,7 +62,7 @@ evidencePaths
 retrievalConfig
 ```
 
-新增欄位：
+新增可選欄位：
 
 ```text
 retrievalTrace
@@ -67,7 +70,7 @@ evidenceBundle
 contextPreview
 ```
 
-`contextPreview` 僅在 debug mode 回傳：
+`contextPreview` 只在 debug mode 回傳：
 
 ```http
 POST /api/analysis?debug=true
@@ -104,6 +107,14 @@ POST /api/analysis?debug=true
 }
 ```
 
+### Example
+
+```powershell
+curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"input\":\"unweighted graph shortest path BFS\"}"
+```
+
 ## Recommendations
 
 ```http
@@ -129,7 +140,7 @@ vector
 graph
 ```
 
-此 endpoint 保留既有 demo recommendation contract，供前端與舊測試相容。
+Recommendations endpoint 保留原 demo contract，避免破壞既有 frontend 與測試。
 
 ## Ingestion CLI
 
@@ -137,7 +148,7 @@ graph
 python -m backend.app.ingestion build --input data/raw --processed data/processed --target all
 ```
 
-`--target`：
+`--target` 可為：
 
 ```text
 json
@@ -147,10 +158,10 @@ neo4j
 all
 ```
 
-Docker 不可用但需要本機 artifact：
+本機 fallback：
 
 ```powershell
 python -m backend.app.ingestion build --input data/raw --processed data/processed --target all --allow-fallback
 ```
 
-未提供 `--allow-fallback` 且 Qdrant / Neo4j 無法連線時，CLI 會回非零 exit code 並提示啟動 Docker 或加上 `--allow-fallback`。
+當 target 需要 Qdrant 或 Neo4j 但服務不可用，且沒有傳入 `--allow-fallback`，CLI 會以非 0 exit code 失敗並提示啟動 Docker 或改用 fallback。

@@ -1,28 +1,37 @@
 # Knowledge Graph + Hybrid RAG
 
-程式題庫輔助查詢系統，目標是把 CPE / LeetCode 題庫整理成可檢索的 JSON、BM25 index、Qdrant 向量庫與 Neo4j 知識圖譜，並在線上查詢時合併向量、關鍵字與圖譜證據。
+這個專案把 CPE / LeetCode 題庫資料整理成可查詢的 Knowledge Graph + Hybrid RAG 系統。架構分成兩條主流程：
 
-## 架構
+- 離線資料建庫流程：清理原始題目、建立 processed JSON、chunks、BM25 index、Qdrant vector records、Neo4j graph records。
+- 線上查詢流程：理解使用者輸入，並行執行 BM25、Qdrant、Neo4j 三路檢索，再 fusion、rerank、整理 evidence/context，最後產生回答。
 
-系統分成兩條流程：
+## 文件
 
-1. Offline Indexing Pipeline：清理 raw 題庫、標準化 schema、切 chunks、抽取 entities / relations，輸出 BM25、Qdrant records、Neo4j graph records。
-2. Online Query Pipeline：做 Query Understanding、Query Embedding、Entity Linking、BM25 / Qdrant / Neo4j 三路檢索、Hybrid Fusion、Reranker、Evidence Builder、Context Builder 與 LLM Response Generator。
+- [架構說明](docs/architecture.md)
+- [API contract](docs/api.md)
+- [資料 contract](docs/data-contract.md)
+- [Evaluation plan](docs/evaluation.md)
+- [重構計畫](docs/Knowledge%20Graph%20+%20Hybrid%20RAG%20重構計畫.md)
+- [Scripts](scripts/README.md)
 
-詳細圖與元件說明見 [docs/architecture.md](docs/architecture.md)。
+## 資料建庫流程
 
-## 快速開始
-
-```powershell
-python -m pytest tests/backend
-cd frontend
-npm.cmd run build
+```mermaid
+flowchart TD
+  A["CPE / LeetCode 題庫資料"] --> B["資料清理與標準化"]
+  B --> C["Chunking<br/>題目敘述 / 題解 / 概念說明"]
+  B --> D["Entity & Relation<br/>Extraction"]
+  B --> E["Raw / Processed JSON"]
+  C --> F["Embedding Model<br/>bge-m3"]
+  F --> G["Vector DB<br/>Qdrant"]
+  D --> H["Knowledge Graph<br/>Construction"]
+  H --> I["Graph DB<br/>Neo4j"]
 ```
 
-建立 ingestion artifacts：
+CLI：
 
 ```powershell
-python -m backend.app.ingestion build --input data/raw --processed data/processed --target all --allow-fallback
+python -m backend.app.ingestion build --input data/raw --processed data/processed --target all
 ```
 
 `--target` 可用：
@@ -35,9 +44,45 @@ neo4j
 all
 ```
 
-未使用 `--allow-fallback` 時，`qdrant` / `neo4j` / `all` 會嘗試寫入 Docker 服務；服務不可用時 CLI 會清楚回報錯誤。
+本機 demo 或測試不需要 Docker，可加上 fallback：
 
-## API
+```powershell
+python -m backend.app.ingestion build --input data/raw --processed data/processed --target all --allow-fallback
+```
+
+輸出 artifact：
+
+```text
+data/processed/problems.json
+data/processed/chunks.json
+data/processed/entities.json
+data/processed/relations.json
+data/processed/bm25_index.json
+data/processed/qdrant_vectors.json
+data/processed/neo4j_graph.json
+data/processed/manifest.json
+```
+
+## 線上查詢流程
+
+```mermaid
+flowchart TD
+  A["使用者輸入<br/>題目 / 題號 / 關鍵字 / 程式碼"] --> B["Query Understanding<br/>意圖判斷、實體抽取、查詢改寫"]
+  B --> C["Query Embedding"]
+  B --> D["Entity Linking<br/>對應 Problem / Algorithm / Pattern 節點"]
+  B --> E["Keyword Query<br/>BM25 關鍵字"]
+  C --> F["Vector Search<br/>Qdrant"]
+  D --> G["Graph Search<br/>Neo4j"]
+  E --> H["BM25 Search"]
+  F --> I["Hybrid Fusion<br/>合併、去重、分數正規化"]
+  G --> I
+  H --> I
+  I --> J["Reranker<br/>重排序候選證據"]
+  J --> K["Evidence Builder<br/>整理相似題、圖譜路徑、演算法證據"]
+  K --> L["Context Builder<br/>組成 LLM Prompt Context"]
+  L --> M["LLM Response Generator"]
+  M --> N["輸出<br/>題目理解 / 演算法推薦 / 相似題 / 分層提示 / 常見錯誤"]
+```
 
 保留既有 endpoint：
 
@@ -48,7 +93,7 @@ POST /api/recommendations
 POST /api/v1/recommendations
 ```
 
-`POST /api/analysis` 會保留既有 response 欄位，並新增：
+`POST /api/analysis` 保留既有 response 欄位，並新增可選 debug 欄位：
 
 ```text
 retrievalTrace
@@ -64,15 +109,27 @@ curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
   -d "{\"input\":\"unweighted graph shortest path BFS\"}"
 ```
 
-完整 API contract 見 [docs/api.md](docs/api.md)。
+## 開發與驗證
+
+```powershell
+python -m pytest tests/backend
+cd frontend
+npm.cmd run build
+```
+
+也可以用 quick start script 同時啟動 FastAPI 與 Vite：
+
+```powershell
+.\scripts\quick-start.ps1
+```
 
 ## Docker Services
 
-`docker-compose.yml` 提供：
+`docker-compose.yml` 提供正式 demo 用的資料庫：
 
 ```text
 Neo4j:  http://localhost:7474 / bolt://localhost:7687
 Qdrant: http://localhost:6333
 ```
 
-測試環境不依賴 Docker；backend tests 使用 deterministic mock / in-memory adapters。
+測試環境不依賴 Docker，預設使用 deterministic mock provider 與 in-memory adapters。

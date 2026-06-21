@@ -2,9 +2,9 @@
 
 ## Raw Problem Schema
 
-`data/raw/*.json` 可為單題 object、題目 array，或 `{ "problems": [...] }`。
+`data/raw/*.json` 可放單一 object、array，或 `{ "problems": [...] }`。
 
-必要欄位：
+必填欄位：
 
 ```text
 id
@@ -55,7 +55,7 @@ editorial
 
 ### `problems.json`
 
-清理與去重後的 Raw Problem。去重 key 為 `source + sourceId`，保留第一筆。
+清理與標準化後的 raw problem。去重 key 為 `source + sourceId`。
 
 ### `chunks.json`
 
@@ -71,7 +71,7 @@ concepts
 metadata
 ```
 
-`kind` 目前包含：
+`kind` 可為：
 
 ```text
 statement
@@ -117,7 +117,7 @@ evidence
 metadata
 ```
 
-目前常見 relation：
+常見 relation：
 
 ```text
 REQUIRES
@@ -126,7 +126,7 @@ HAS_PATTERN
 
 ### `bm25_index.json`
 
-本機 BM25 artifact，包含 documents、tokens 與 chunk payload。
+本地 BM25 artifact，包含 documents、tokens 與 chunk payload。
 
 ### `qdrant_vectors.json`
 
@@ -137,7 +137,7 @@ embeddingModel
 records
 ```
 
-每筆 record 包含：
+每筆 record：
 
 ```text
 id
@@ -154,4 +154,35 @@ entities
 relations
 ```
 
-此檔同時作為 Neo4j import/debug artifact。
+這份 artifact 可作為 Neo4j import/debug 的中介格式。
+
+## Retrieval Trace Contract
+
+`retrievalTrace` 包含：
+
+```text
+queryUnderstanding
+entityLinking
+vectorCandidates
+graphCandidates
+bm25Candidates
+fusionScores
+rerankerScores
+```
+
+## Evidence Bundle Contract
+
+`evidenceBundle` 包含：
+
+```text
+similarProblems
+graphPaths
+algorithmEvidence
+dataStructureEvidence
+patternEvidence
+commonMistakes
+```
+
+## Context Preview Contract
+
+`contextPreview` 是送入 `LLMProvider` 前整理好的 prompt context。它只會在 `debug=true` 時回傳。
