@@ -6,6 +6,7 @@ export interface AnalysisRequest {
   inputText: string;
   mode: RetrievalMode;
   topK: number;
+  debug: boolean;
 }
 
 export interface RequiredConcept {
@@ -49,6 +50,41 @@ export interface RetrievalConfig {
   language: string;
 }
 
+export interface TraceCandidate {
+  id: string;
+  title?: string;
+  source?: string;
+  score?: number;
+  concepts?: string[];
+  problemType?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface RetrievalTrace {
+  queryUnderstanding: {
+    originalQuery?: string;
+    normalizedQuery?: string;
+    inputKind?: InputKind;
+    intent?: string;
+    keywords?: string[];
+  };
+  entityLinking: Array<Record<string, unknown>>;
+  vectorCandidates: TraceCandidate[];
+  graphCandidates: TraceCandidate[];
+  bm25Candidates: TraceCandidate[];
+  fusionScores: TraceCandidate[];
+  rerankerScores: TraceCandidate[];
+}
+
+export interface EvidenceBundle {
+  similarProblems: Array<Record<string, unknown>>;
+  graphPaths: Array<Record<string, unknown>>;
+  algorithmEvidence: string[];
+  dataStructureEvidence: string[];
+  patternEvidence: string[];
+  commonMistakes: string[];
+}
+
 export interface AnalysisResponse {
   queryId: string;
   usedMockData: boolean;
@@ -61,4 +97,7 @@ export interface AnalysisResponse {
   commonMistakes: string[];
   evidencePaths: EvidencePath[];
   retrievalConfig: RetrievalConfig;
+  retrievalTrace?: RetrievalTrace;
+  evidenceBundle?: EvidenceBundle;
+  contextPreview?: string;
 }

@@ -3,27 +3,31 @@ import type { ReactNode } from "react";
 import { fetchAnalysis } from "./api";
 import type {
   AnalysisResponse,
+  EvidenceBundle,
   EvidencePath,
   InputKind,
   RequiredConcept,
   RetrievalMode,
-  SimilarProblem
+  RetrievalTrace,
+  SimilarProblem,
+  TraceCandidate
 } from "./types";
 
 const sampleInput =
-  "給定一張無權圖、起點與終點，請找出從起點到終點的最短步數。每次可以沿著一條邊移動，若無法到達請輸出 -1。";
+  "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。需要說明該使用哪些演算法與資料結構。";
 
 const modes: Array<{ id: RetrievalMode; label: string }> = [
-  { id: "hybrid", label: "混合檢索" },
-  { id: "vector", label: "向量檢索" },
-  { id: "graph", label: "圖譜推理" }
+  { id: "hybrid", label: "Hybrid" },
+  { id: "vector", label: "Vector" },
+  { id: "graph", label: "Graph" }
 ];
+
+const flowSteps = ["輸入", "查詢理解", "三路檢索", "Fusion / Rerank", "Evidence / Context", "回答"];
 
 function clampTopK(value: number, fallback: number): number {
   if (!Number.isFinite(value)) {
     return fallback;
   }
-
   return Math.min(8, Math.max(1, Math.trunc(value)));
 }
 
@@ -31,42 +35,41 @@ function inputKindLabel(kind: InputKind): string {
   if (kind === "cpp") {
     return "C++ 程式碼";
   }
-
   if (kind === "python") {
     return "Python 程式碼";
   }
-
   if (kind === "problem") {
     return "題目敘述";
   }
-
-  return "自動判定";
+  return "一般查詢";
 }
 
 function conceptKindLabel(kind: RequiredConcept["kind"]): string {
   if (kind === "algorithm") {
     return "演算法";
   }
-
   if (kind === "data_structure") {
     return "資料結構";
   }
-
   if (kind === "pattern") {
-    return "解題模式";
+    return "題型模式";
   }
-
-  return "觀念";
+  return "概念";
 }
 
-function formatPercent(value: number): string {
-  return `${Math.round(value * 100)}%`;
+function formatScore(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "-";
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 export default function App() {
   const [inputText, setInputText] = useState(sampleInput);
   const [mode, setMode] = useState<RetrievalMode>("hybrid");
   const [topK, setTopK] = useState(4);
+  const [debug, setDebug] = useState(true);
   const [response, setResponse] = useState<AnalysisResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,17 +82,15 @@ export default function App() {
     setError(null);
 
     try {
-      const nextResponse = await fetchAnalysis({ inputText, mode, topK });
+      const nextResponse = await fetchAnalysis({ inputText, mode, topK, debug });
       if (requestId !== latestRequestId.current) {
         return;
       }
-
       setResponse(nextResponse);
     } catch (caughtError) {
       if (requestId !== latestRequestId.current) {
         return;
       }
-
       setError(caughtError instanceof Error ? caughtError.message : "分析失敗，請稍後再試。");
     } finally {
       if (requestId === latestRequestId.current) {
@@ -102,12 +103,12 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">程式解題知識圖譜 RAG</p>
-          <h1>可解釋的演算法與資料結構分析</h1>
+          <p className="eyebrow">Knowledge Graph + Hybrid RAG</p>
+          <h1>程式題庫查詢工作台</h1>
         </div>
         <div className="system-status" aria-live="polite">
           <span className={response?.usedMockData ? "status-dot mock" : "status-dot"} />
-          {response?.usedMockData ? "本機範例資料" : "API 就緒"}
+          {response?.usedMockData ? "Mock fallback" : "API ready"}
         </div>
       </header>
 
@@ -116,18 +117,18 @@ export default function App() {
           <div className="panel-heading">
             <div>
               <p className="eyebrow">輸入</p>
-              <h2>題目或 C++/Python 程式碼</h2>
+              <h2>題目 / 題號 / 關鍵字 / 程式碼</h2>
             </div>
             <button className="ghost-button" type="button" onClick={() => setInputText(sampleInput)}>
-              重設範例
+              載入範例
             </button>
           </div>
 
           <textarea
-            aria-label="題目或 C++/Python 程式碼"
+            aria-label="題目、題號、關鍵字或程式碼"
             value={inputText}
             onChange={(event) => setInputText(event.target.value)}
-            placeholder="貼上題目敘述，或貼上包含 BFS / Queue / visited 的 C++、Python 程式碼。"
+            placeholder="輸入題目敘述、LeetCode / CPE 題號、關鍵字，或貼上 C++ / Python 程式碼。"
             spellCheck={false}
           />
 
@@ -149,7 +150,7 @@ export default function App() {
           </div>
 
           <div className="control-row">
-            <label htmlFor="top-k">相似題數量</label>
+            <label htmlFor="top-k">候選數</label>
             <input
               id="top-k"
               min="1"
@@ -160,8 +161,13 @@ export default function App() {
             />
           </div>
 
+          <label className="check-row">
+            <input checked={debug} type="checkbox" onChange={(event) => setDebug(event.target.checked)} />
+            顯示 context preview
+          </label>
+
           <button className="primary-button" type="button" onClick={handleAnalyze} disabled={isLoading}>
-            {isLoading ? "分析中..." : "開始分析"}
+            {isLoading ? "分析中..." : "執行查詢"}
           </button>
 
           {error && <p className="error-text">{error}</p>}
@@ -173,7 +179,8 @@ export default function App() {
 
         <section className="side-stack">
           <ModelPanel response={response} />
-          <EvidencePanel paths={response?.evidencePaths ?? []} />
+          <EvidencePathPanel paths={response?.evidencePaths ?? []} />
+          <ContextPanel contextPreview={response?.contextPreview} />
         </section>
       </section>
     </main>
@@ -183,28 +190,39 @@ export default function App() {
 function EmptyState() {
   return (
     <div className="empty-state">
-      <h2>尚未分析</h2>
-      <p>貼上題目或程式碼後，系統會輸出題目類型、需要觀念、相似題、相似原因、解題提示與常見錯誤。</p>
+      <h2>等待查詢</h2>
+      <p>結果會依照線上查詢流程呈現。</p>
     </div>
   );
 }
 
 function AnalysisResult({ response }: { response: AnalysisResponse }) {
+  const trace = response.retrievalTrace;
+  const evidence = response.evidenceBundle;
+
   return (
     <div className="analysis-result">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">分析結果</p>
+          <p className="eyebrow">線上查詢流程</p>
           <h2>{inputKindLabel(response.inputKind)}</h2>
         </div>
         <span className="query-id">{response.queryId}</span>
       </div>
 
-      <OutputBlock title="題目類型">
+      <FlowStrip />
+
+      <OutputBlock title="回答">
         <p className="problem-type">{response.problemType}</p>
+        <p>{response.similarityReason}</p>
       </OutputBlock>
 
-      <OutputBlock title="需要觀念">
+      <QueryUnderstandingPanel trace={trace} />
+      <RetrievalPanel trace={trace} />
+      <FusionPanel trace={trace} />
+      <EvidenceBundlePanel evidence={evidence} />
+
+      <OutputBlock title="必要概念">
         <div className="concept-grid">
           {response.requiredConcepts.map((concept) => (
             <article className="concept-card" key={concept.id}>
@@ -226,17 +244,125 @@ function AnalysisResult({ response }: { response: AnalysisResponse }) {
         </div>
       </OutputBlock>
 
-      <OutputBlock title="為什麼相似">
-        <p>{response.similarityReason}</p>
-      </OutputBlock>
+      <TwoColumnLists
+        leftTitle="解題提示"
+        leftItems={response.solvingHints}
+        rightTitle="常見錯誤"
+        rightItems={response.commonMistakes}
+      />
+    </div>
+  );
+}
 
-      <OutputBlock title="解題提示">
-        <OrderedItems items={response.solvingHints} />
-      </OutputBlock>
+function FlowStrip() {
+  return (
+    <ol className="flow-strip">
+      {flowSteps.map((step) => (
+        <li key={step}>{step}</li>
+      ))}
+    </ol>
+  );
+}
 
-      <OutputBlock title="常見錯誤">
-        <OrderedItems items={response.commonMistakes} />
-      </OutputBlock>
+function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
+  const understanding = trace?.queryUnderstanding;
+  const entities = trace?.entityLinking ?? [];
+
+  return (
+    <OutputBlock title="查詢理解">
+      <div className="kv-grid">
+        <div>
+          <span>Intent</span>
+          <strong>{understanding?.intent ?? "-"}</strong>
+        </div>
+        <div>
+          <span>Input kind</span>
+          <strong>{understanding?.inputKind ?? "-"}</strong>
+        </div>
+        <div>
+          <span>Keywords</span>
+          <strong>{understanding?.keywords?.join(", ") || "-"}</strong>
+        </div>
+      </div>
+      <div className="chips">
+        {entities.map((entity, index) => (
+          <span key={`${asText(entity.entityId)}-${index}`}>
+            {asText(entity.name) || asText(entity.entityId) || "entity"}
+          </span>
+        ))}
+      </div>
+    </OutputBlock>
+  );
+}
+
+function RetrievalPanel({ trace }: { trace?: RetrievalTrace }) {
+  return (
+    <OutputBlock title="三路檢索">
+      <div className="retrieval-grid">
+        <CandidateList title="Vector Search / Qdrant" candidates={trace?.vectorCandidates ?? []} />
+        <CandidateList title="Graph Search / Neo4j" candidates={trace?.graphCandidates ?? []} />
+        <CandidateList title="BM25 Search" candidates={trace?.bm25Candidates ?? []} />
+      </div>
+    </OutputBlock>
+  );
+}
+
+function FusionPanel({ trace }: { trace?: RetrievalTrace }) {
+  return (
+    <OutputBlock title="Hybrid Fusion / Reranker">
+      <div className="retrieval-grid two">
+        <CandidateList title="Fusion scores" candidates={trace?.fusionScores ?? []} />
+        <CandidateList title="Reranker scores" candidates={trace?.rerankerScores ?? []} />
+      </div>
+    </OutputBlock>
+  );
+}
+
+function EvidenceBundlePanel({ evidence }: { evidence?: EvidenceBundle }) {
+  if (!evidence) {
+    return null;
+  }
+
+  return (
+    <OutputBlock title="Evidence Builder">
+      <div className="evidence-bundle">
+        <EvidenceList title="Algorithm" items={evidence.algorithmEvidence} />
+        <EvidenceList title="Data Structure" items={evidence.dataStructureEvidence} />
+        <EvidenceList title="Pattern" items={evidence.patternEvidence} />
+        <EvidenceList title="Common Mistakes" items={evidence.commonMistakes} />
+      </div>
+    </OutputBlock>
+  );
+}
+
+function EvidenceList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="evidence-list">
+      <span>{title}</span>
+      {items.length > 0 ? <strong>{items.join(", ")}</strong> : <strong>-</strong>}
+    </div>
+  );
+}
+
+function CandidateList({ title, candidates }: { title: string; candidates: TraceCandidate[] }) {
+  return (
+    <div className="candidate-list">
+      <h3>{title}</h3>
+      {candidates.length === 0 ? (
+        <p className="muted">沒有候選。</p>
+      ) : (
+        <ol>
+          {candidates.slice(0, 4).map((candidate) => (
+            <li key={`${title}-${candidate.id}`}>
+              <div>
+                <strong>{candidate.title || candidate.id}</strong>
+                <span>{candidate.id}</span>
+              </div>
+              <b>{formatScore(candidate.score)}</b>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }
@@ -270,6 +396,29 @@ function SimilarProblemCard({ problem }: { problem: SimilarProblem }) {
   );
 }
 
+function TwoColumnLists({
+  leftTitle,
+  leftItems,
+  rightTitle,
+  rightItems
+}: {
+  leftTitle: string;
+  leftItems: string[];
+  rightTitle: string;
+  rightItems: string[];
+}) {
+  return (
+    <div className="two-column-lists">
+      <OutputBlock title={leftTitle}>
+        <OrderedItems items={leftItems} />
+      </OutputBlock>
+      <OutputBlock title={rightTitle}>
+        <OrderedItems items={rightItems} />
+      </OutputBlock>
+    </div>
+  );
+}
+
 function OrderedItems({ items }: { items: string[] }) {
   return (
     <ol className="ordered-items">
@@ -287,21 +436,21 @@ function ModelPanel({ response }: { response: AnalysisResponse | null }) {
     <section className="panel model-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">檢索設定</p>
-          <h2>繁中友善模型</h2>
+          <p className="eyebrow">模型設定</p>
+          <h2>Provider / Adapter</h2>
         </div>
       </div>
       <dl className="model-list">
         <div>
-          <dt>嵌入模型</dt>
+          <dt>Embedding</dt>
           <dd>{config?.embeddingModel ?? "BAAI/bge-m3"}</dd>
         </div>
         <div>
-          <dt>重排序模型</dt>
+          <dt>Reranker</dt>
           <dd>{config?.rerankerModel ?? "BAAI/bge-reranker-v2-m3"}</dd>
         </div>
         <div>
-          <dt>語言</dt>
+          <dt>Language</dt>
           <dd>{config?.language ?? "zh-Hant"}</dd>
         </div>
       </dl>
@@ -309,18 +458,18 @@ function ModelPanel({ response }: { response: AnalysisResponse | null }) {
   );
 }
 
-function EvidencePanel({ paths }: { paths: EvidencePath[] }) {
+function EvidencePathPanel({ paths }: { paths: EvidencePath[] }) {
   return (
     <section className="panel evidence-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">可解釋性</p>
+          <p className="eyebrow">Graph Evidence</p>
           <h2>證據路徑</h2>
         </div>
       </div>
 
       {paths.length === 0 ? (
-        <p className="muted">分析後會顯示題目、觀念、演算法與資料結構之間的關聯。</p>
+        <p className="muted">尚無證據路徑。</p>
       ) : (
         paths.map((path) => (
           <article className="path-card" key={path.title}>
@@ -337,13 +486,27 @@ function EvidencePanel({ paths }: { paths: EvidencePath[] }) {
               {path.edges.map((edge) => (
                 <li key={`${path.title}-${edge.from}-${edge.to}-${edge.relation}`}>
                   <span>{edge.relation}</span>
-                  <strong>{formatPercent(edge.weight)}</strong>
+                  <strong>{formatScore(edge.weight)}</strong>
                 </li>
               ))}
             </ul>
           </article>
         ))
       )}
+    </section>
+  );
+}
+
+function ContextPanel({ contextPreview }: { contextPreview?: string }) {
+  return (
+    <section className="panel context-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Context Builder</p>
+          <h2>LLM Prompt Context</h2>
+        </div>
+      </div>
+      {contextPreview ? <pre>{contextPreview}</pre> : <p className="muted">Debug mode 關閉。</p>}
     </section>
   );
 }
