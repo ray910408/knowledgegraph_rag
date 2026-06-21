@@ -83,6 +83,10 @@ def build_ingestion_artifacts(
                     "Neo4j is not available; start Docker or pass --allow-fallback"
                 ) from exc
 
+    artifact_names = sorted(path.name for path in processed_dir.glob("*.json"))
+    if "manifest.json" not in artifact_names:
+        artifact_names.append("manifest.json")
+        artifact_names.sort()
     manifest = {
         "target": target,
         "counts": {
@@ -92,7 +96,7 @@ def build_ingestion_artifacts(
             "relations": len(relations),
         },
         "fallback": fallback,
-        "artifacts": sorted(path.name for path in processed_dir.glob("*.json")),
+        "artifacts": artifact_names,
     }
     _write_json(processed_dir / "manifest.json", manifest)
     return manifest

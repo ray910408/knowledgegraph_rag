@@ -1,61 +1,157 @@
 # Data Contract
 
-The repository does not fetch datasets in v1. User-provided files can later be
-placed under `data/raw/` and converted into the graph/vector stores.
+## Raw Problem Schema
 
-## Problem Record
+`data/raw/*.json` 可為單題 object、題目 array，或 `{ "problems": [...] }`。
+
+必要欄位：
+
+```text
+id
+source
+sourceId
+title
+problemType
+statement
+answer
+solutionHints
+concepts
+tags
+metadata
+```
+
+可選欄位：
+
+```text
+difficulty
+constraints
+examples
+editorial
+```
+
+範例：
 
 ```json
 {
-  "id": "uva-10653",
-  "source": "UVa",
-  "sourceId": "10653",
-  "title": "Bombs! NO they are Mines!!",
+  "id": "leetcode-994",
+  "source": "LeetCode",
+  "sourceId": "994",
+  "title": "Rotting Oranges",
   "problemType": "Graph Traversal",
-  "statement": "Problem statement text",
-  "answer": "Use BFS on the unweighted grid to find the minimum number of steps.",
-  "solutionHints": ["Build the blocked-cell grid first.", "Run BFS from the start cell."],
-  "concepts": ["BFS", "Queue", "Visited Array"],
-  "difficulty": "practice",
-  "tags": ["graph", "shortest-path"]
+  "statement": "Multi-source BFS on a grid.",
+  "answer": "Use BFS from all initially rotten oranges.",
+  "solutionHints": ["Push all sources first."],
+  "concepts": ["BFS", "Queue"],
+  "tags": ["matrix", "graph"],
+  "metadata": { "url": "https://leetcode.com/problems/rotting-oranges/" },
+  "difficulty": "Medium",
+  "constraints": ["1 <= m, n <= 10"],
+  "examples": [{ "input": "grid", "output": "4" }],
+  "editorial": "This is a multi-source BFS problem."
 }
 ```
 
-`answer` and `solutionHints` are intentionally kept in the raw dataset seed so
-the system can explain why a similar problem is useful without generating full
-accepted code.
+## Processed Artifacts
 
-## Concept Record
+### `problems.json`
 
-```json
-{
-  "id": "bfs",
-  "kind": "Algorithm",
-  "name": "Breadth First Search",
-  "aliases": ["BFS"],
-  "description": "Layered traversal for unweighted graphs."
-}
+清理與去重後的 Raw Problem。去重 key 為 `source + sourceId`，保留第一筆。
+
+### `chunks.json`
+
+欄位：
+
+```text
+id
+problemId
+kind
+text
+index
+concepts
+metadata
 ```
 
-## Relationship Record
+`kind` 目前包含：
 
-```json
-{
-  "source_id": "cpe-0001",
-  "target_id": "bfs",
-  "type": "SOLVED_BY",
-  "weight": 1.0,
-  "rationale": "Unweighted shortest path."
-}
+```text
+statement
+answer
+hint
+editorial
 ```
 
-## Evaluation Split
+### `entities.json`
 
-Recommended first evaluation set:
+欄位：
 
-- 100 CPE 1-star to 3-star problems
-- 30 LeetCode Easy problems
-- Frozen labels for algorithm, data structure, pattern, and exclusion cases
+```text
+id
+name
+type
+aliases
+problemIds
+metadata
+```
 
-Do not include evaluation labels in the retrieval prompt or LLM evidence unless
-the test explicitly measures label leakage.
+常見 `type`：
+
+```text
+problem
+algorithm
+data_structure
+pattern
+concept
+```
+
+### `relations.json`
+
+欄位：
+
+```text
+id
+sourceId
+targetId
+type
+weight
+evidence
+metadata
+```
+
+目前常見 relation：
+
+```text
+REQUIRES
+HAS_PATTERN
+```
+
+### `bm25_index.json`
+
+本機 BM25 artifact，包含 documents、tokens 與 chunk payload。
+
+### `qdrant_vectors.json`
+
+欄位：
+
+```text
+embeddingModel
+records
+```
+
+每筆 record 包含：
+
+```text
+id
+vector
+payload
+```
+
+### `neo4j_graph.json`
+
+欄位：
+
+```text
+entities
+relations
+```
+
+此檔同時作為 Neo4j import/debug artifact。

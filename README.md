@@ -1,137 +1,78 @@
-# Explainable Programming GraphRAG
+# Knowledge Graph + Hybrid RAG
 
-This repository contains a v1 scaffold for an explainable programming-problem
-assistant. It links problems, algorithms, data structures, and solution patterns
-through a knowledge graph, then combines graph evidence with vector retrieval.
+程式題庫輔助查詢系統，目標是把 CPE / LeetCode 題庫整理成可檢索的 JSON、BM25 index、Qdrant 向量庫與 Neo4j 知識圖譜，並在線上查詢時合併向量、關鍵字與圖譜證據。
 
-The first implementation intentionally does not fetch or bundle an online judge
-dataset. Put user-provided CPE and LeetCode exports under `data/raw/` later and
-adapt the ingestion pipeline without changing the retrieval contract.
+## 架構
 
-## Goals
+系統分成兩條流程：
 
-- Build a checkable knowledge graph for programming problem solving.
-- Compare vector-only, graph-only, and hybrid retrieval.
-- Surface evidence paths such as `Problem -> Concept -> Algorithm -> Pattern`.
-- Keep LLM output constrained to retrieved evidence.
-- Support OAuth-capable LLM providers through an adapter, without baking API
-  keys into the core system.
+1. Offline Indexing Pipeline：清理 raw 題庫、標準化 schema、切 chunks、抽取 entities / relations，輸出 BM25、Qdrant records、Neo4j graph records。
+2. Online Query Pipeline：做 Query Understanding、Query Embedding、Entity Linking、BM25 / Qdrant / Neo4j 三路檢索、Hybrid Fusion、Reranker、Evidence Builder、Context Builder 與 LLM Response Generator。
 
-## Structure Diagram
+詳細圖與元件說明見 [docs/architecture.md](docs/architecture.md)。
 
-```mermaid
-flowchart LR
-    A["題目敘述或 C++/Python 程式碼"] --> B["React 繁中前端"]
-    B --> C["FastAPI /api/analysis"]
-    C --> D["輸入類型偵測"]
-    C --> E["題目與答案資料集"]
-    C --> F["知識圖譜推理"]
-    C --> G["向量檢索設定"]
-    G --> G1["Embedding: BAAI/bge-m3"]
-    G --> G2["Reranker: BAAI/bge-reranker-v2-m3"]
-    E --> H["相似題 UVa / LeetCode"]
-    F --> I["可解釋證據路徑"]
-    H --> J["題目類型、需要觀念、提示、常見錯誤"]
-    I --> J
-    J --> B
-```
-
-## Non-goals for v1
-
-- No automatic full accepted-code generation.
-- No dataset crawling or scraping.
-- No account system, bookmarks, or learning history.
-- No claim that GraphRAG is universally better than vector retrieval.
-
-## Repository Layout
-
-```text
-backend/        FastAPI app, retrieval services, repositories, adapters
-frontend/       React workbench for recommendations and evidence paths
-data/raw/       Local dataset seed and later user-provided dataset files
-data/processed/ Derived artifacts, not committed
-docs/           Architecture and operating notes
-tests/          Unit and integration tests
-```
-
-## Local Services
-
-Neo4j and Qdrant are defined in `docker-compose.yml` for local development.
-The in-memory repositories are used by tests and by the app when external
-services are not configured.
-
-```powershell
-docker compose up -d neo4j qdrant
-```
-
-## Development Notes
-
-Python tests are designed to cover the core retrieval behavior without needing
-Neo4j, Qdrant, a dataset, or an LLM API key.
-
-Quick start for the backend and frontend:
-
-```powershell
-.\scripts\quick-start.ps1
-```
-
-Check local prerequisites without starting services:
-
-```powershell
-.\scripts\quick-start.ps1 -Check
-```
+## 快速開始
 
 ```powershell
 python -m pytest tests/backend
-```
-
-Run the backend API:
-
-```powershell
-python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-For the frontend, PowerShell may block `npm.ps1`; use `npm.cmd` instead.
-
-```powershell
 cd frontend
-npm.cmd install
-npm.cmd run dev
+npm.cmd run build
 ```
 
-The Vite dev server proxies `/api/*` to `http://127.0.0.1:8000`, so the web app
-can call FastAPI without changing frontend code.
+建立 ingestion artifacts：
 
-## Current Demo Behavior
+```powershell
+python -m backend.app.ingestion build --input data/raw --processed data/processed --target all --allow-fallback
+```
 
-`/api/analysis` and `/api/v1/analysis` are the primary UI endpoints. They accept
-either a problem statement or pasted C++/Python code and return:
+`--target` 可用：
 
-- problem type
-- required concepts
-- similar UVa/LeetCode problems
-- an explanation for why those problems are similar
-- solving hints
-- common mistakes
-- graph evidence paths
-- retrieval model configuration
+```text
+json
+bm25
+qdrant
+neo4j
+all
+```
 
-`/api/recommendations` and `/api/v1/recommendations` use a small in-memory demo
-graph until real CPE/LeetCode data is imported. The frontend still has a local
-mock fallback so the workbench remains inspectable even when the API is not
-running.
+未使用 `--allow-fallback` 時，`qdrant` / `neo4j` / `all` 會嘗試寫入 Docker 服務；服務不可用時 CLI 會清楚回報錯誤。
 
-The local dataset seed lives at `data/raw/programming_problems.json` and can
-store programming problems with answers and solution hints. The default retrieval
-model configuration is:
+## API
 
-- Embedding: `BAAI/bge-m3`
-- Reranker: `BAAI/bge-reranker-v2-m3`
-- Language: `zh-Hant`
+保留既有 endpoint：
 
-When adding the real dataset later:
+```text
+POST /api/analysis
+POST /api/v1/analysis
+POST /api/recommendations
+POST /api/v1/recommendations
+```
 
-1. Put raw exports under `data/raw/`.
-2. Convert them into the `docs/data-contract.md` records.
-3. Load graph records into Neo4j and vector records into Qdrant.
-4. Keep the same API response shape documented in `docs/api.md`.
+`POST /api/analysis` 會保留既有 response 欄位，並新增：
+
+```text
+retrievalTrace
+evidenceBundle
+contextPreview
+```
+
+`contextPreview` 只會在 `debug=true` 時回傳：
+
+```powershell
+curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"input\":\"unweighted graph shortest path BFS\"}"
+```
+
+完整 API contract 見 [docs/api.md](docs/api.md)。
+
+## Docker Services
+
+`docker-compose.yml` 提供：
+
+```text
+Neo4j:  http://localhost:7474 / bolt://localhost:7687
+Qdrant: http://localhost:6333
+```
+
+測試環境不依賴 Docker；backend tests 使用 deterministic mock / in-memory adapters。

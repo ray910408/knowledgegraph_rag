@@ -1,202 +1,156 @@
 # API Contract
 
-## `GET /api/health`
+## Health
 
-Returns a simple liveness response.
+```http
+GET /api/health
+GET /api/v1/health
+```
+
+Response：
+
+```json
+{ "status": "ok" }
+```
+
+## Analysis
+
+```http
+POST /api/analysis
+POST /api/v1/analysis
+```
+
+Request body：
 
 ```json
 {
-  "status": "ok"
+  "input": "unweighted graph shortest path BFS"
 }
 ```
 
-Equivalent versioned route:
+也支援：
 
-- `GET /api/v1/health`
+```text
+problemText
+statement
+code
+problemId
+```
 
-## `POST /api/analysis`
+`problemId` 若明確指定但找不到，回 `404`。沒有 `problemId` 的一般文字輸入會走 query search，不會回 404。
 
-Primary endpoint for the explainable problem-solving assistant. The web app
-sends camelCase fields. The backend also accepts snake_case and `statement` for
-script compatibility.
+空輸入回 `400`。
 
-Request:
+### Analysis Response
+
+既有欄位保留：
+
+```text
+queryId
+usedMockData
+inputKind
+problemType
+requiredConcepts
+similarProblems
+similarityReason
+solvingHints
+commonMistakes
+evidencePaths
+retrievalConfig
+```
+
+新增欄位：
+
+```text
+retrievalTrace
+evidenceBundle
+contextPreview
+```
+
+`contextPreview` 僅在 debug mode 回傳：
+
+```http
+POST /api/analysis?debug=true
+```
+
+### Retrieval Trace
 
 ```json
 {
-  "inputText": "Problem statement or pasted C++/Python code",
+  "queryUnderstanding": {
+    "intent": "problem_search",
+    "inputKind": "problem",
+    "keywords": ["unweighted", "graph", "shortest", "path", "bfs"]
+  },
+  "entityLinking": [],
+  "vectorCandidates": [],
+  "graphCandidates": [],
+  "bm25Candidates": [],
+  "fusionScores": [],
+  "rerankerScores": []
+}
+```
+
+### Evidence Bundle
+
+```json
+{
+  "similarProblems": [],
+  "graphPaths": [],
+  "algorithmEvidence": ["BFS"],
+  "dataStructureEvidence": ["Queue"],
+  "patternEvidence": ["Graph Traversal"],
+  "commonMistakes": []
+}
+```
+
+## Recommendations
+
+```http
+POST /api/recommendations
+POST /api/v1/recommendations
+```
+
+Request body：
+
+```json
+{
+  "problemText": "Find the shortest path in an unweighted graph.",
   "mode": "hybrid",
-  "topK": 4
+  "topK": 3
 }
 ```
 
-Compatible request:
+`mode` 可為：
 
-```json
-{
-  "statement": "Given an unweighted graph, find the minimum number of steps.",
-  "top_k": 4
-}
+```text
+hybrid
+vector
+graph
 ```
 
-Equivalent versioned route:
+此 endpoint 保留既有 demo recommendation contract，供前端與舊測試相容。
 
-- `POST /api/v1/analysis`
+## Ingestion CLI
 
-Response:
-
-```json
-{
-  "queryId": "analysis-problem-graph-traversal",
-  "usedMockData": false,
-  "inputKind": "problem",
-  "problemType": "圖論遍歷（Graph Traversal）",
-  "requiredConcepts": [
-    {
-      "id": "bfs",
-      "name": "BFS",
-      "kind": "algorithm",
-      "description": "在無權圖中依照層次展開搜尋，適合找最短步數。"
-    },
-    {
-      "id": "queue",
-      "name": "Queue",
-      "kind": "data_structure",
-      "description": "維持 BFS 的先進先出順序。"
-    }
-  ],
-  "similarProblems": [
-    {
-      "source": "UVa",
-      "id": "10653",
-      "title": "Bombs! NO they are Mines!!",
-      "reason": "同樣需要在無權圖中用 BFS 找最短步數。",
-      "sharedConcepts": ["BFS", "Queue", "Visited Array"],
-      "answerHint": "先建圖，再從起點做 BFS。"
-    }
-  ],
-  "similarityReason": "都需要在無權圖中用 BFS 找最短步數，並用 Queue 維持搜尋層次。",
-  "solvingHints": ["先建圖或定義狀態轉移。", "從起點初始化 Queue。", "再執行 BFS。"],
-  "commonMistakes": ["忘記標記 visited。", "Queue 初始化錯誤。"],
-  "evidencePaths": [
-    {
-      "title": "無權最短路徑推理",
-      "nodes": [
-        { "id": "input", "label": "輸入題目", "type": "problem" },
-        { "id": "bfs", "label": "BFS", "type": "algorithm" }
-      ],
-      "edges": [
-        { "from": "input", "to": "bfs", "relation": "無權最短步數", "weight": 0.92 }
-      ]
-    }
-  ],
-  "retrievalConfig": {
-    "embeddingModel": "BAAI/bge-m3",
-    "rerankerModel": "BAAI/bge-reranker-v2-m3",
-    "language": "zh-Hant"
-  }
-}
+```powershell
+python -m backend.app.ingestion build --input data/raw --processed data/processed --target all
 ```
 
-Accepted `inputKind` values:
+`--target`：
 
-- `problem`
-- `cpp`
-- `python`
-- `unknown`
-
-## `POST /api/recommendations`
-
-The web app sends camelCase fields. The backend also accepts `statement` and
-`top_k` aliases so later scripts can use the data-contract naming style.
-
-Request:
-
-```json
-{
-  "problemText": "Problem statement or pasted prompt",
-  "mode": "hybrid",
-  "topK": 5
-}
+```text
+json
+bm25
+qdrant
+neo4j
+all
 ```
 
-Compatible request:
+Docker 不可用但需要本機 artifact：
 
-```json
-{
-  "problem_id": "demo-shortest-subarray",
-  "statement": "Problem statement or pasted prompt",
-  "mode": "graph",
-  "top_k": 5
-}
+```powershell
+python -m backend.app.ingestion build --input data/raw --processed data/processed --target all --allow-fallback
 ```
 
-Equivalent versioned route:
-
-- `POST /api/v1/recommendations`
-
-Accepted aliases:
-
-- Problem id: `problemId`, `problem_id`
-- Problem text: `problemText`, `problem_text`, `statement`
-- Top-k: `topK`, `top_k`
-
-If both a problem id and explicit problem text are provided, the backend uses the
-explicit text for retrieval and marks the response `queryId` with `with-text`.
-
-Modes:
-
-- `hybrid`
-- `vector`
-- `graph`
-
-Response:
-
-```json
-{
-  "queryId": "demo-hybrid-5",
-  "usedMockData": false,
-  "recommendations": [
-    {
-      "id": "sliding-window",
-      "kind": "pattern",
-      "title": "Sliding window",
-      "score": 0.91,
-      "confidence": "high",
-      "summary": "Maintain a moving interval for contiguous constraints.",
-      "fitSignals": ["Range sum", "Monotonic window"],
-      "pitfalls": ["Requires a monotonic condition such as non-negative values."]
-    }
-  ],
-  "evidencePaths": [
-    {
-      "title": "Sliding window evidence 1",
-      "nodes": [
-        { "id": "range-sum", "label": "Range sum", "type": "concept" },
-        { "id": "sliding-window", "label": "Sliding window", "type": "pattern" }
-      ],
-      "edges": [
-        {
-          "from": "range-sum",
-          "to": "sliding-window",
-          "relation": "HAS_PATTERN",
-          "weight": 0.5
-        }
-      ]
-    }
-  ],
-  "evaluation": [
-    {
-      "name": "Concept recall",
-      "vectorOnly": 0.72,
-      "graphOnly": 0.65,
-      "hybrid": 0.84,
-      "note": "Demo placeholder until the frozen CPE/LeetCode set is imported."
-    }
-  ]
-}
-```
-
-The frontend treats successful but malformed responses as unusable and falls
-back to local mock data, preventing the workbench from crashing on partial API
-implementations.
+未提供 `--allow-fallback` 且 Qdrant / Neo4j 無法連線時，CLI 會回非零 exit code 並提示啟動 Docker 或加上 `--allow-fallback`。

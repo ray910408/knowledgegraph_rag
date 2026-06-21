@@ -61,6 +61,7 @@ def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
     assert manifest["counts"]["entities"] >= 3
     assert manifest["fallback"]["qdrant"] is True
     assert manifest["fallback"]["neo4j"] is True
+    assert "manifest.json" in manifest["artifacts"]
 
     problems = json.loads((processed_dir / "problems.json").read_text(encoding="utf-8"))
     chunks = json.loads((processed_dir / "chunks.json").read_text(encoding="utf-8"))
@@ -69,6 +70,7 @@ def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
     bm25 = json.loads((processed_dir / "bm25_index.json").read_text(encoding="utf-8"))
     qdrant = json.loads((processed_dir / "qdrant_vectors.json").read_text(encoding="utf-8"))
     neo4j = json.loads((processed_dir / "neo4j_graph.json").read_text(encoding="utf-8"))
+    assert (processed_dir / "manifest.json").exists()
 
     assert problems[0]["id"] == "leetcode-994-a"
     assert problems[0]["title"] == "Rotting Oranges"

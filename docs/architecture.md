@@ -1,80 +1,104 @@
 # Architecture
 
-## Scope
+本專案已重構為 Knowledge Graph + Hybrid RAG 架構，分成離線建庫與線上查詢兩條流程。
 
-The v1 system is an evaluation-oriented GraphRAG workbench. It helps inspect why
-a problem is associated with specific algorithms, data structures, and solution
-patterns. It does not attempt to solve every problem end-to-end or generate full
-accepted code.
-
-## Core Flow
+## Offline Indexing Pipeline
 
 ```mermaid
-flowchart LR
-    A["Problem text or problem id"] --> B["Vector recall"]
-    A --> C["Graph lookup"]
-    B --> D["Hybrid ranker"]
-    C --> D
-    D --> E["Evidence bundle"]
-    E --> F["LLM provider adapter"]
-    E --> G["Workbench UI"]
-    F --> G
+flowchart TD
+  A["CPE / LeetCode 題庫資料"] --> B["資料清理與標準化"]
+  B --> C["Chunking<br/>題目敘述 / 題解 / 概念說明"]
+  B --> D["Entity & Relation<br/>Extraction"]
+  B --> E["Raw / Processed JSON"]
+  C --> F["Embedding Model<br/>bge-m3"]
+  F --> G["Vector DB<br/>Qdrant"]
+  D --> H["Knowledge Graph<br/>Construction"]
+  H --> I["Graph DB<br/>Neo4j"]
 ```
 
-## Knowledge Graph
+目前 implementation：
 
-Primary node types:
+- `backend/app/ingestion/` 提供 CLI 與 artifact builder。
+- `RawProblem`、`ProblemChunk`、`EntityRecord`、`RelationRecord` 定義在 `backend/app/contracts.py`。
+- `DeterministicMockEmbeddingProvider` 預設產生穩定向量，正式設定仍標示 `BAAI/bge-m3`。
+- `QdrantVectorStore`、`Neo4jGraphStore` 已提供 Docker adapter；測試使用 in-memory / fake client。
+- `--allow-fallback` 會只寫本機 JSON artifacts，不要求 Docker。
 
-- `Problem`
-- `Concept`
-- `Algorithm`
-- `DataStructure`
-- `Pattern`
-- `Complexity`
+主要輸出：
 
-Primary relation types:
+```text
+data/processed/problems.json
+data/processed/chunks.json
+data/processed/entities.json
+data/processed/relations.json
+data/processed/bm25_index.json
+data/processed/qdrant_vectors.json
+data/processed/neo4j_graph.json
+data/processed/manifest.json
+```
 
-- `REQUIRES`
-- `SOLVED_BY`
-- `USES`
-- `HAS_PATTERN`
-- `HAS_COMPLEXITY`
-- `SIMILAR_TO`
-- `EXCLUDES`
+## Online Query Pipeline
 
-The `EXCLUDES` relation is important for explainability. It lets the system say
-why a tempting algorithm is not recommended, for example when negative weights
-exclude Dijkstra-style reasoning.
+```mermaid
+flowchart TD
+  A["使用者輸入<br/>題目 / 題號 / 關鍵字 / 程式碼"] --> B["Query Understanding<br/>意圖判斷、實體抽取、查詢改寫"]
+  B --> C["Query Embedding"]
+  B --> D["Entity Linking<br/>對應 Problem / Algorithm / Pattern 節點"]
+  B --> E["Keyword Query<br/>BM25 關鍵字"]
+  C --> F["Vector Search<br/>Qdrant"]
+  D --> G["Graph Search<br/>Neo4j"]
+  E --> H["BM25 Search"]
+  F --> I["Hybrid Fusion<br/>合併、去重、分數正規化"]
+  G --> I
+  H --> I
+  I --> J["Reranker<br/>重排序候選證據"]
+  J --> K["Evidence Builder<br/>整理相似題、圖譜路徑、演算法證據"]
+  K --> L["Context Builder<br/>組成 LLM Prompt Context"]
+  L --> M["LLM Response Generator"]
+  M --> N["輸出<br/>題目理解 / 演算法推薦 / 相似題 / 分層提示 / 常見錯誤"]
+```
 
-## Retrieval Modes
+目前 implementation：
 
-- Vector-only: semantic recall from problem statement and metadata.
-- Graph-only: graph traversal from known concepts or problem ids.
-- Hybrid: combines vector score, graph path support, and concept overlap.
+- `backend/app/retrieval/pipeline.py` 拆出可單測服務：
+  - `QueryUnderstandingService`
+  - `EntityLinkingService`
+  - `VectorSearchService`
+  - `GraphSearchService`
+  - `BM25SearchService`
+  - `HybridFusionService`
+  - `Reranker`
+  - `EvidenceBuilder`
+  - `ContextBuilder`
+  - `LLMResponseGenerator`
+- `POST /api/analysis` 已接上 `retrievalTrace`、`evidenceBundle` 與 debug-only `contextPreview`。
+- 舊的 `HybridRetrievalService` 保留，避免破壞既有 recommendations tests。
 
-The hybrid claim is deliberately narrow: v1 measures whether hybrid retrieval
-improves ambiguous, cross-concept, and exclusion-heavy cases in a frozen test
-set. It should not claim universal superiority.
+## Provider / Adapter Boundary
 
-Default model configuration for Traditional Chinese retrieval:
+Provider interfaces：
 
-- Embedding: `BAAI/bge-m3`
-- Reranker: `BAAI/bge-reranker-v2-m3`
-- Language: `zh-Hant`
+```text
+EmbeddingProvider
+LLMProvider
+```
 
-The scaffold exposes these names as configuration only. It does not download or
-execute model weights during tests or local quick start.
+Store interfaces：
 
-## Dataset Seed
+```text
+VectorStore
+GraphStore
+BM25Store
+```
 
-`data/raw/programming_problems.json` is a deterministic local seed for problem
-statements, answers, solution hints, concepts, and source metadata. It is small
-by design so the analysis endpoint can demonstrate graph traversal explanations
-without crawling UVa, LeetCode, or CPE.
+Adapter implementations：
 
-## LLM Boundary
+```text
+InMemoryVectorStore
+InMemoryGraphStore
+InMemoryBM25Store
+QdrantVectorStore
+Neo4jGraphStore
+```
 
-The LLM layer receives an evidence bundle and turns it into readable guidance.
-It must not invent algorithms, paths, or constraints that are absent from the
-bundle. OAuth-capable providers can be added behind `LLMProvider`, while tests
-and evaluation can use a mock provider or no LLM at all.
+正式服務可接 Docker Qdrant / Neo4j；測試與本機 demo 可用 mock / in-memory，避免環境耦合。
