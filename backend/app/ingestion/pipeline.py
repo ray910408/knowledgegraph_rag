@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from ..contracts import EntityRecord, ProblemChunk, RawProblem, RelationRecord
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
+from ..stores import GraphStore, VectorRecord, VectorStore
 
 
 Target = Literal["json", "bm25", "qdrant", "neo4j", "all"]
@@ -25,6 +26,8 @@ def build_ingestion_artifacts(
     target: Target = "all",
     allow_fallback: bool = False,
     embedding_provider: EmbeddingProvider | None = None,
+    vector_store: VectorStore | None = None,
+    graph_store: GraphStore | None = None,
 ) -> dict[str, Any]:
     if target not in {"json", "bm25", "qdrant", "neo4j", "all"}:
         raise IngestionError(f"unsupported target: {target}")
@@ -43,19 +46,42 @@ def build_ingestion_artifacts(
     if target in {"bm25", "all"}:
         _write_bm25_index(processed_dir / "bm25_index.json", chunks)
     if target in {"qdrant", "all"}:
-        if not allow_fallback:
-            raise IngestionError("Qdrant is not available; start Docker or pass --allow-fallback")
-        fallback["qdrant"] = True
-        _write_qdrant_vectors(
-            processed_dir / "qdrant_vectors.json",
+        vector_records, qdrant_payload = _build_qdrant_vectors(
             chunks,
             embedding_provider or DeterministicMockEmbeddingProvider(),
         )
+        _write_json(processed_dir / "qdrant_vectors.json", qdrant_payload)
+        if vector_store is not None:
+            vector_store.upsert(vector_records)
+        elif allow_fallback:
+            fallback["qdrant"] = True
+        else:
+            try:
+                from ..adapters.qdrant import QdrantVectorStore
+
+                QdrantVectorStore().upsert(vector_records)
+            except Exception as exc:
+                raise IngestionError(
+                    "Qdrant is not available; start Docker or pass --allow-fallback"
+                ) from exc
     if target in {"neo4j", "all"}:
-        if not allow_fallback:
-            raise IngestionError("Neo4j is not available; start Docker or pass --allow-fallback")
-        fallback["neo4j"] = True
         _write_neo4j_graph(processed_dir / "neo4j_graph.json", entities, relations)
+        if graph_store is not None:
+            graph_store.upsert_entities(entities)
+            graph_store.upsert_relations(relations)
+        elif allow_fallback:
+            fallback["neo4j"] = True
+        else:
+            try:
+                from ..adapters.neo4j import Neo4jGraphStore
+
+                store = Neo4jGraphStore()
+                store.upsert_entities(entities)
+                store.upsert_relations(relations)
+            except Exception as exc:
+                raise IngestionError(
+                    "Neo4j is not available; start Docker or pass --allow-fallback"
+                ) from exc
 
     manifest = {
         "target": target,
@@ -244,21 +270,24 @@ def _write_bm25_index(path: Path, chunks: tuple[ProblemChunk, ...]) -> None:
     _write_json(path, {"documents": documents})
 
 
-def _write_qdrant_vectors(
-    path: Path,
+def _build_qdrant_vectors(
     chunks: tuple[ProblemChunk, ...],
     embedding_provider: EmbeddingProvider,
-) -> None:
-    records = []
+) -> tuple[tuple[VectorRecord, ...], dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    vector_records: list[VectorRecord] = []
     for chunk in chunks:
+        vector = tuple(embedding_provider.embed_text(chunk.text))
+        payload = chunk.to_mapping()
         records.append(
             {
                 "id": chunk.id,
-                "vector": embedding_provider.embed_text(chunk.text),
-                "payload": chunk.to_mapping(),
+                "vector": list(vector),
+                "payload": payload,
             }
         )
-    _write_json(path, {"embeddingModel": embedding_provider.model_name, "records": records})
+        vector_records.append(VectorRecord(id=chunk.id, vector=vector, payload=payload))
+    return tuple(vector_records), {"embeddingModel": embedding_provider.model_name, "records": records}
 
 
 def _write_neo4j_graph(

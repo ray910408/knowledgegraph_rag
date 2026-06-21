@@ -142,3 +142,50 @@ def test_ingestion_cli_requires_fallback_for_docker_targets(tmp_path):
     assert completed.returncode == 2
     assert "Qdrant is not available" in completed.stderr
     assert "--allow-fallback" in completed.stderr
+
+
+def test_ingestion_can_write_to_injected_db_adapters_without_fallback(tmp_path):
+    class CapturingVectorStore:
+        def __init__(self):
+            self.records = ()
+
+        def upsert(self, records):
+            self.records = tuple(records)
+
+        def search(self, query_vector, *, top_k, filters=None):
+            return ()
+
+    class CapturingGraphStore:
+        def __init__(self):
+            self.entities = ()
+            self.relations = ()
+
+        def upsert_entities(self, entities):
+            self.entities = tuple(entities)
+
+        def upsert_relations(self, relations):
+            self.relations = tuple(relations)
+
+        def find_paths(self, source_id, target_id, *, max_hops=3):
+            return ()
+
+    raw_dir = tmp_path / "raw"
+    processed_dir = tmp_path / "processed"
+    raw_dir.mkdir()
+    _write_raw_problem(raw_dir / "problems.json")
+    vector_store = CapturingVectorStore()
+    graph_store = CapturingGraphStore()
+
+    manifest = build_ingestion_artifacts(
+        input_dir=raw_dir,
+        processed_dir=processed_dir,
+        target="all",
+        allow_fallback=False,
+        vector_store=vector_store,
+        graph_store=graph_store,
+    )
+
+    assert manifest["fallback"] == {"qdrant": False, "neo4j": False}
+    assert vector_store.records
+    assert graph_store.entities
+    assert graph_store.relations
