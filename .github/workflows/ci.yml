@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -c constraints-ci.txt -e ".[dev]"
+          python -m pip install -c constraints-ci.txt fastapi "uvicorn[standard]" pydantic neo4j qdrant-client pytest ruff
 
       - name: Lint
         run: python -m ruff check .
