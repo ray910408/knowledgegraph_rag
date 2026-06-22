@@ -223,10 +223,10 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
     settings = runtime.RuntimeRetrievalSettings(
         backend="stores",
         qdrant_url="http://qdrant.example:6333",
-        qdrant_collection="programming_chunks",
+        qdrant_collection="custom_runtime_chunks",
         neo4j_uri="bolt://neo4j.example:7687",
-        neo4j_user="neo4j",
-        neo4j_password="password",
+        neo4j_user="custom_user",
+        neo4j_password="custom_password",
         bm25_index_path=index_path,
     )
 
@@ -244,15 +244,15 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
         "graph": "neo4j",
         "bm25": "bm25_index",
     }
-    assert FakeVectorStore.constructor_calls
-    assert FakeGraphStore.constructor_calls
+    assert len(FakeVectorStore.constructor_calls) == 1
+    assert len(FakeGraphStore.constructor_calls) == 1
     vector_call = FakeVectorStore.constructor_calls[0]
     graph_call = FakeGraphStore.constructor_calls[0]
     assert vector_call["url"] == "http://qdrant.example:6333"
-    assert vector_call["collection_name"] == "programming_chunks"
+    assert vector_call["collection_name"] == "custom_runtime_chunks"
     assert graph_call["uri"] == "bolt://neo4j.example:7687"
-    assert graph_call["user"] == "neo4j"
-    assert graph_call["password"] == "password"
+    assert graph_call["user"] == "custom_user"
+    assert graph_call["password"] == "custom_password"
     assert trace["vectorCandidates"][0]["payload"]["storeCandidateId"] == "leetcode-994:statement:0"
     assert trace["bm25Candidates"][0]["payload"]["storeCandidateId"] == "leetcode-994:statement:0"
     assert trace["vectorCandidates"][0]["payload"]["answer"] == ""
