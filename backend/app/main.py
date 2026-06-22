@@ -8,7 +8,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from .analysis import analyze_programming_input, load_programming_dataset
 from .demo import build_demo_repositories, recommend_demo_techniques
-from .retrieval.pipeline import ContextBuilder, EvidenceBuilder, OnlineQueryPipeline
+from .retrieval.pipeline import ContextBuilder, EvidenceBuilder
+from .retrieval.runtime import RuntimeRetrieval, add_runtime_debug_trace, build_runtime_retrieval
 
 
 RecommendationMode = Literal["hybrid", "vector", "graph"]
@@ -150,6 +151,7 @@ class AnalysisResponse(BaseModel):
     commonMistakes: list[str]
     evidencePaths: list[AnalysisEvidencePathResponse]
     retrievalConfig: RetrievalConfigResponse
+    retrievalBackend: Literal["local", "stores"] | None = None
     retrievalTrace: dict[str, Any] | None = None
     evidenceBundle: dict[str, Any] | None = None
     contextPreview: str | None = None
@@ -166,6 +168,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def configure_runtime_retrieval() -> None:
+    app.state.runtime_retrieval = build_runtime_retrieval()
+
+
+def _runtime_retrieval() -> RuntimeRetrieval:
+    runtime = getattr(app.state, "runtime_retrieval", None)
+    if runtime is None:
+        runtime = build_runtime_retrieval()
+        app.state.runtime_retrieval = runtime
+    return runtime
 
 
 @app.get("/api/v1/health")
@@ -235,7 +250,14 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    pipeline_result = OnlineQueryPipeline().run(text, top_k=5)
+    runtime_retrieval = _runtime_retrieval()
+    pipeline_result = runtime_retrieval.pipeline.run(text, top_k=5)
+    retrieval_trace = pipeline_result.trace.to_mapping()
+    if debug:
+        retrieval_trace = add_runtime_debug_trace(
+            retrieval_trace,
+            runtime_retrieval.candidate_sources,
+        )
     evidence_bundle = EvidenceBuilder().build(
         pipeline_result.reranked_candidates,
         pipeline_result.graph_paths,
@@ -303,7 +325,8 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
             rerankerModel=result.retrieval_config.reranker_model,
             language=result.retrieval_config.language,
         ),
-        retrievalTrace=pipeline_result.trace.to_mapping(),
+        retrievalBackend=runtime_retrieval.backend if debug else None,
+        retrievalTrace=retrieval_trace,
         evidenceBundle=evidence_bundle.to_mapping(),
         contextPreview=context_preview if debug else None,
     )

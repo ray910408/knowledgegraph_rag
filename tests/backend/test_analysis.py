@@ -151,11 +151,13 @@ def test_analysis_response_includes_trace_and_evidence_without_context_by_defaul
     assert "retrievalTrace" in payload
     assert "evidenceBundle" in payload
     assert "contextPreview" not in payload
+    assert "retrievalBackend" not in payload
+    assert "candidateSources" not in payload["retrievalTrace"]
     assert payload["retrievalTrace"]["queryUnderstanding"]["intent"] == "problem_search"
     assert payload["evidenceBundle"]["similarProblems"]
 
 
-def test_analysis_debug_mode_includes_context_preview():
+def test_analysis_debug_mode_includes_context_preview_and_retrieval_backend():
     client = TestClient(app)
 
     response = client.post(
@@ -165,8 +167,16 @@ def test_analysis_debug_mode_includes_context_preview():
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["retrievalBackend"] == "local"
     assert "contextPreview" in payload
     assert "Query Understanding" in payload["contextPreview"]
+    assert payload["retrievalTrace"]["candidateSources"] == {
+        "vector": "local",
+        "graph": "local",
+        "bm25": "local",
+    }
+    assert payload["retrievalTrace"]["vectorCandidates"][0]["candidateSource"] == "local"
+    assert payload["retrievalTrace"]["bm25Candidates"][0]["candidateSource"] == "local"
 
 
 def test_analysis_unknown_explicit_problem_id_returns_404():
