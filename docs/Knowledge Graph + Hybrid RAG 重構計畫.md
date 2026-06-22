@@ -1,5 +1,17 @@
 # Knowledge Graph + Hybrid RAG 重構計畫
 
+## Store-backed retrieval update
+
+- Online retrieval services support injected `VectorStore`, `BM25Store`, and
+  `GraphStore` implementations while preserving the local document fallback.
+- Store-backed graph trace summaries remain `input -> linked entity -> problem`;
+  raw store nodes and relations are preserved under `storePath`.
+- FastAPI runtime store mode is not handled in this round. Injecting Qdrant,
+  Neo4j, and BM25Store into the live API is deferred to the next End-to-End
+  Store-Backed Demo phase.
+- Query Understanding remains rule-based in this round, so retrieval refactoring
+  is not mixed with LLM behavior changes.
+
 ## Summary
 
 本次重構把原本可測的 demo scaffold 拆成正式的 Knowledge Graph + Hybrid RAG 架構，並明確分成兩條流程：

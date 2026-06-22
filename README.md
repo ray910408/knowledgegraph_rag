@@ -111,6 +111,19 @@ curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
   -d "{\"input\":\"unweighted graph shortest path BFS\"}"
 ```
 
+### Store-backed retrieval scope
+
+`OnlineQueryPipeline` can receive `vector_store`, `bm25_store`, and
+`graph_store` instances for store-backed online retrieval. The search services
+keep the local documents fallback when a store is not injected, so the default
+API and quick-start demo still run without Docker or external services.
+
+This round does not enable FastAPI runtime store mode. `POST /api/analysis`
+still constructs the default local pipeline; wiring Qdrant, Neo4j, and
+BM25Store into the running API is reserved for the next End-to-End Store-Backed
+Demo phase. Query Understanding remains rule-based, and response generation
+stays on the current mock-backed `LLMResponseGenerator`.
+
 ## 開發與驗證
 
 ```powershell

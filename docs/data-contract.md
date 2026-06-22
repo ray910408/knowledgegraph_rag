@@ -172,6 +172,26 @@ fusionScores
 rerankerScores
 ```
 
+Store-backed candidates can include store metadata in each candidate payload:
+
+```text
+storeCandidateId
+storePayload
+```
+
+Store-backed graph paths preserve both the stable summary and the raw store path:
+
+```json
+{
+  "nodes": ["input", "concept:bfs", "leetcode-994"],
+  "relations": ["MENTIONS", "REQUIRED_BY"],
+  "storePath": {
+    "nodes": ["leetcode-994", "concept:bfs"],
+    "relations": ["REQUIRES"]
+  }
+}
+```
+
 ## Evidence Bundle Contract
 
 `evidenceBundle` 包含：
