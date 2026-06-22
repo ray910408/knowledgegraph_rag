@@ -17,6 +17,7 @@ build/
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
+!data/raw/programming_problems.json
 !data/processed/.gitkeep
 
 *.log

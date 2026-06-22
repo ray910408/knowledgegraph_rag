@@ -8,6 +8,17 @@ from pathlib import Path
 from backend.app.ingestion.pipeline import build_ingestion_artifacts
 
 
+def test_committed_programming_problem_seed_is_readable_utf8():
+    seed_path = Path(__file__).resolve().parents[2] / "data" / "raw" / "programming_problems.json"
+    seed_text = seed_path.read_text(encoding="utf-8")
+
+    assert not seed_text.startswith("\ufeff")
+    assert "\ufffd" not in seed_text
+    assert "\\u" not in seed_text
+    assert "在有障礙的無權網格中" in seed_text
+    assert len(json.loads(seed_text)["problems"]) == 3
+
+
 def _write_raw_problem(path: Path) -> None:
     payload = {
         "problems": [
@@ -17,9 +28,9 @@ def _write_raw_problem(path: Path) -> None:
                 "sourceId": "994",
                 "title": " Rotting   Oranges ",
                 "problemType": "Graph Traversal",
-                "statement": "Multi-source   BFS\nwith a queue.",
-                "answer": "Use BFS from all rotten oranges.",
-                "solutionHints": ["Push all sources first."],
+                "statement": "多源 BFS\n使用 Queue 逐層擴散。",
+                "answer": "從所有腐爛橘子同時開始 BFS。",
+                "solutionHints": ["先把所有起點放入 Queue。"],
                 "concepts": ["BFS", "Queue"],
                 "tags": ["matrix"],
                 "metadata": {"difficulty": "medium"},
@@ -39,7 +50,7 @@ def _write_raw_problem(path: Path) -> None:
             },
         ]
     }
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
@@ -63,7 +74,11 @@ def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
     assert manifest["fallback"]["neo4j"] is True
     assert "manifest.json" in manifest["artifacts"]
 
-    problems = json.loads((processed_dir / "problems.json").read_text(encoding="utf-8"))
+    problems_text = (processed_dir / "problems.json").read_text(encoding="utf-8")
+    assert "\\u" not in problems_text
+    assert "從所有腐爛橘子同時開始 BFS。" in problems_text
+
+    problems = json.loads(problems_text)
     chunks = json.loads((processed_dir / "chunks.json").read_text(encoding="utf-8"))
     entities = json.loads((processed_dir / "entities.json").read_text(encoding="utf-8"))
     relations = json.loads((processed_dir / "relations.json").read_text(encoding="utf-8"))
@@ -74,7 +89,7 @@ def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
 
     assert problems[0]["id"] == "leetcode-994-a"
     assert problems[0]["title"] == "Rotting Oranges"
-    assert problems[0]["statement"] == "Multi-source BFS with a queue."
+    assert problems[0]["statement"] == "多源 BFS 使用 Queue 逐層擴散。"
     assert {chunk["kind"] for chunk in chunks} >= {"statement", "answer"}
     assert "concept:bfs" in {entity["id"] for entity in entities}
     assert any(relation["type"] == "REQUIRES" for relation in relations)
