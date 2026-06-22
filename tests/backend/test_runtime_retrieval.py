@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import ClassVar, Sequence
 
 import pytest
 
@@ -65,9 +65,19 @@ def _write_bm25_index(path: Path) -> None:
 
 
 class FakeVectorStore:
+    constructor_calls: ClassVar[list[dict[str, object]]] = []
+
     def __init__(self, *, client=None, collection_name: str, url: str, timeout: float = 1.0):
         self.collection_name = collection_name
         self.url = url
+        self.constructor_calls.append(
+            {
+                "client": client,
+                "collection_name": collection_name,
+                "timeout": timeout,
+                "url": url,
+            }
+        )
 
     def upsert(self, records: Sequence[object]) -> None:
         raise AssertionError("runtime search should not upsert vector records")
@@ -94,9 +104,19 @@ class FakeVectorStore:
 
 
 class FakeGraphStore:
+    constructor_calls: ClassVar[list[dict[str, object]]] = []
+
     def __init__(self, *, driver=None, uri: str, user: str, password: str):
         self.uri = uri
         self.user = user
+        self.constructor_calls.append(
+            {
+                "driver": driver,
+                "password": password,
+                "uri": uri,
+                "user": user,
+            }
+        )
 
     def upsert_entities(self, entities: Sequence[object]) -> None:
         raise AssertionError("runtime search should not upsert graph entities")
@@ -196,6 +216,8 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
 
     index_path = tmp_path / "bm25_index.json"
     _write_bm25_index(index_path)
+    FakeVectorStore.constructor_calls.clear()
+    FakeGraphStore.constructor_calls.clear()
     monkeypatch.setattr(runtime, "QdrantVectorStore", FakeVectorStore)
     monkeypatch.setattr(runtime, "Neo4jGraphStore", FakeGraphStore)
     settings = runtime.RuntimeRetrievalSettings(
@@ -222,6 +244,15 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
         "graph": "neo4j",
         "bm25": "bm25_index",
     }
+    assert FakeVectorStore.constructor_calls
+    assert FakeGraphStore.constructor_calls
+    vector_call = FakeVectorStore.constructor_calls[0]
+    graph_call = FakeGraphStore.constructor_calls[0]
+    assert vector_call["url"] == "http://qdrant.example:6333"
+    assert vector_call["collection_name"] == "programming_chunks"
+    assert graph_call["uri"] == "bolt://neo4j.example:7687"
+    assert graph_call["user"] == "neo4j"
+    assert graph_call["password"] == "password"
     assert trace["vectorCandidates"][0]["payload"]["storeCandidateId"] == "leetcode-994:statement:0"
     assert trace["bm25Candidates"][0]["payload"]["storeCandidateId"] == "leetcode-994:statement:0"
     assert trace["vectorCandidates"][0]["payload"]["answer"] == ""
