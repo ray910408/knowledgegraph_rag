@@ -8,6 +8,7 @@ from typing import Any, Sequence
 from ..analysis import detect_input_kind, load_programming_dataset
 from ..contracts import RetrievalEvidenceBundle, RetrievalTrace
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
+from ..stores import BM25Store, GraphStore, SearchCandidate, VectorStore
 
 
 JsonMap = dict[str, Any]
@@ -133,10 +134,12 @@ class VectorSearchService:
         self,
         documents: Sequence[RetrievalDocument],
         embedding_provider: EmbeddingProvider | None = None,
+        vector_store: VectorStore | None = None,
     ) -> None:
         self._documents = tuple(documents)
         self._embedding_provider = embedding_provider or DeterministicMockEmbeddingProvider()
-        self._vectors = {
+        self._vector_store = vector_store
+        self._vectors = {} if vector_store is not None else {
             document.id: self._embedding_provider.embed_text(
                 f"{document.title} {document.text} {' '.join(document.concepts)}"
             )
@@ -145,6 +148,12 @@ class VectorSearchService:
 
     def search(self, understanding: QueryUnderstanding, *, top_k: int) -> tuple[RetrievalCandidate, ...]:
         query_vector = self._embedding_provider.embed_text(understanding.normalized_query)
+        if self._vector_store is not None:
+            return tuple(
+                _candidate_from_store_candidate(candidate, source="vector")
+                for candidate in self._vector_store.search(query_vector, top_k=top_k)
+            )
+
         candidates = [
             _candidate_from_document(
                 document,
@@ -157,10 +166,21 @@ class VectorSearchService:
 
 
 class BM25SearchService:
-    def __init__(self, documents: Sequence[RetrievalDocument]) -> None:
+    def __init__(
+        self,
+        documents: Sequence[RetrievalDocument],
+        bm25_store: BM25Store | None = None,
+    ) -> None:
         self._documents = tuple(documents)
+        self._bm25_store = bm25_store
 
     def search(self, understanding: QueryUnderstanding, *, top_k: int) -> tuple[RetrievalCandidate, ...]:
+        if self._bm25_store is not None:
+            return tuple(
+                _candidate_from_store_candidate(candidate, source="bm25")
+                for candidate in self._bm25_store.search(understanding.normalized_query, top_k=top_k)
+            )
+
         query_terms = set(understanding.keywords)
         candidates: list[RetrievalCandidate] = []
         for document in self._documents:
@@ -177,10 +197,18 @@ class BM25SearchService:
 
 
 class GraphSearchService:
-    def __init__(self, documents: Sequence[RetrievalDocument]) -> None:
+    def __init__(
+        self,
+        documents: Sequence[RetrievalDocument],
+        graph_store: GraphStore | None = None,
+    ) -> None:
         self._documents = tuple(documents)
+        self._graph_store = graph_store
 
     def search(self, linked_entities: Sequence[JsonMap], *, top_k: int) -> GraphSearchResult:
+        if self._graph_store is not None:
+            return self._search_store(linked_entities, top_k=top_k)
+
         entity_names = {str(entity["name"]).lower() for entity in linked_entities}
         entity_ids = {str(entity["entityId"]) for entity in linked_entities}
         candidates: list[RetrievalCandidate] = []
@@ -207,6 +235,40 @@ class GraphSearchService:
                         "rationale": f"linked {match['name']} to {document.title}",
                     }
                 )
+        return GraphSearchResult(
+            candidates=tuple(sorted(candidates, key=lambda item: (-item.score, item.id))[:top_k]),
+            paths=tuple(paths),
+        )
+
+    def _search_store(self, linked_entities: Sequence[JsonMap], *, top_k: int) -> GraphSearchResult:
+        assert self._graph_store is not None
+        candidates: list[RetrievalCandidate] = []
+        paths: list[JsonMap] = []
+        linked_entity_count = max(len(linked_entities), 1)
+        for document in self._documents:
+            document_paths_by_entity: dict[str, list[JsonMap]] = {}
+            for entity in linked_entities:
+                entity_id = str(entity["entityId"])
+                direct_paths = self._graph_store.find_paths(document.id, entity_id, max_hops=3)
+                reverse_paths = self._graph_store.find_paths(entity_id, document.id, max_hops=3)
+                for path in (*direct_paths, *reverse_paths):
+                    normalized = _normalize_graph_store_path(
+                        path,
+                        entity=entity,
+                        document=document,
+                    )
+                    document_paths_by_entity.setdefault(entity_id, []).append(normalized)
+                    paths.append(normalized)
+
+            if not document_paths_by_entity:
+                continue
+            per_entity_scores = [
+                max(float(path.get("score", 0.0)) for path in entity_paths)
+                for entity_paths in document_paths_by_entity.values()
+            ]
+            score = min(sum(per_entity_scores) / linked_entity_count, 1.0)
+            candidates.append(_candidate_from_document(document, source="graph", score=score))
+
         return GraphSearchResult(
             candidates=tuple(sorted(candidates, key=lambda item: (-item.score, item.id))[:top_k]),
             paths=tuple(paths),
@@ -371,9 +433,15 @@ class OnlineQueryPipeline:
         *,
         documents: Sequence[RetrievalDocument] | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        vector_store: VectorStore | None = None,
+        bm25_store: BM25Store | None = None,
+        graph_store: GraphStore | None = None,
     ) -> None:
         self._documents = tuple(documents) if documents is not None else _load_default_documents()
         self._embedding_provider = embedding_provider or DeterministicMockEmbeddingProvider()
+        self._vector_store = vector_store
+        self._bm25_store = bm25_store
+        self._graph_store = graph_store
 
     def run(self, query: str, *, top_k: int = 5) -> OnlineQueryResult:
         understanding = QueryUnderstandingService().understand(query)
@@ -381,12 +449,19 @@ class OnlineQueryPipeline:
         vector_candidates = VectorSearchService(
             self._documents,
             self._embedding_provider,
+            vector_store=self._vector_store,
         ).search(understanding, top_k=max(top_k * 2, top_k))
-        bm25_candidates = BM25SearchService(self._documents).search(
+        bm25_candidates = BM25SearchService(
+            self._documents,
+            bm25_store=self._bm25_store,
+        ).search(
             understanding,
             top_k=max(top_k * 2, top_k),
         )
-        graph_result = GraphSearchService(self._documents).search(
+        graph_result = GraphSearchService(
+            self._documents,
+            graph_store=self._graph_store,
+        ).search(
             linked_entities,
             top_k=max(top_k * 2, top_k),
         )
@@ -439,6 +514,81 @@ def _candidate_from_document(
             "answer": document.answer,
         },
     )
+
+
+def _candidate_from_store_candidate(
+    candidate: SearchCandidate,
+    *,
+    source: str,
+) -> RetrievalCandidate:
+    payload = dict(candidate.payload)
+    metadata = _mapping(payload.get("metadata"))
+    problem_id = str(
+        payload.get("problemId")
+        or payload.get("problem_id")
+        or metadata.get("problemId")
+        or candidate.id
+    )
+    concepts = _tuple_of_str(payload.get("concepts") or metadata.get("concepts"))
+    title = str(payload.get("title") or metadata.get("title") or problem_id)
+    problem_type = str(payload.get("problemType") or metadata.get("problemType") or "")
+    text = str(payload.get("text") or payload.get("statement") or "")
+    answer = str(payload.get("answer") or metadata.get("answer") or "")
+
+    return RetrievalCandidate(
+        id=problem_id,
+        title=title,
+        source=source,
+        score=round(candidate.score, 6),
+        text=text,
+        concepts=concepts,
+        problem_type=problem_type,
+        payload={
+            "storeCandidateId": candidate.id,
+            "documentSource": str(payload.get("source") or metadata.get("source") or ""),
+            "sourceId": str(payload.get("sourceId") or metadata.get("sourceId") or ""),
+            "answer": answer,
+            "storePayload": payload,
+        },
+    )
+
+
+def _normalize_graph_store_path(
+    path: JsonMap,
+    *,
+    entity: JsonMap,
+    document: RetrievalDocument,
+) -> JsonMap:
+    entity_id = str(entity["entityId"])
+    entity_name = str(entity.get("name", entity_id))
+    raw_nodes = [str(node) for node in path.get("nodes", [])]
+    raw_relations = [str(relation) for relation in path.get("relations", [])]
+
+    return {
+        "nodes": ["input", entity_id, document.id],
+        "relations": ["MENTIONS", "REQUIRED_BY"],
+        "score": round(float(path.get("score", 0.0)), 6),
+        "rationale": f"linked {entity_name} to {document.title}",
+        "storePath": {
+            "nodes": raw_nodes,
+            "relations": raw_relations,
+        },
+    }
+
+
+def _mapping(value: Any) -> JsonMap:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _tuple_of_str(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    try:
+        return tuple(str(item) for item in value)
+    except TypeError:
+        return (str(value),)
 
 
 def _load_default_documents() -> tuple[RetrievalDocument, ...]:
