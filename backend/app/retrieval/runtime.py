@@ -50,6 +50,8 @@ class JsonBM25Store:
         if not path.exists():
             raise RuntimeRetrievalError(f"BM25 index not found: {path}")
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeRetrievalError(f"BM25 index must contain a documents list: {path}")
         raw_documents = payload.get("documents")
         if not isinstance(raw_documents, list):
             raise RuntimeRetrievalError(f"BM25 index must contain a documents list: {path}")

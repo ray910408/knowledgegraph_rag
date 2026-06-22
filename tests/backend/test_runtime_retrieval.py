@@ -171,6 +171,16 @@ def test_json_bm25_store_loads_processed_index(tmp_path):
     assert results[0].payload["metadata"]["title"] == "Rotting Oranges"
 
 
+def test_json_bm25_store_rejects_non_object_index(tmp_path):
+    from backend.app.retrieval.runtime import JsonBM25Store, RuntimeRetrievalError
+
+    index_path = tmp_path / "bm25_index.json"
+    index_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(RuntimeRetrievalError, match="documents list"):
+        JsonBM25Store.from_path(index_path)
+
+
 def test_json_bm25_store_can_accept_runtime_documents_after_loading(tmp_path):
     from backend.app.retrieval.runtime import JsonBM25Store
 
