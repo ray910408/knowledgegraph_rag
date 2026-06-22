@@ -103,12 +103,39 @@ API 層的 `POST /api/analysis` 與 `POST /api/v1/analysis` 保留既有 respons
 - `evidenceBundle`
 - `contextPreview`
 
-FastAPI does not inject runtime stores in this phase. The API still uses the
-default `OnlineQueryPipeline()` local mode. Runtime Qdrant / Neo4j / BM25Store
-injection is left for the next End-to-End Store-Backed Demo, after
-`retrievalTrace`, `evidenceBundle`, and `contextPreview` are stable. Query
-Understanding is still rule-based, and the LLM path still uses the current mock
-response generator rather than a real `LLMProvider`.
+## Runtime Backend Selection
+
+FastAPI reads `RETRIEVAL_BACKEND` at startup:
+
+- `local`: builds the default `OnlineQueryPipeline()` and keeps the local fallback behavior.
+- `stores`: builds `QdrantVectorStore`, `Neo4jGraphStore`, and `JsonBM25Store`, then injects them into `OnlineQueryPipeline`.
+
+This is runtime wiring, not a full dataset source replacement.
+`OnlineQueryPipeline` still uses the existing runtime documents as the graph
+candidate set. Loading documents from `data/processed/problems.json` belongs in
+a separate follow-up phase.
+
+`JsonBM25Store` reads `data/processed/bm25_index.json` immediately. Qdrant and
+Neo4j constructors do not intentionally run health checks here, so connection
+failures may surface on the first query unless a future task adds explicit
+health checks.
+
+The API keeps the existing logical retrieval lanes: vector, graph, BM25,
+fusion, and rerank. In debug mode, `retrievalTrace.candidateSources` identifies
+the physical backend for each lane:
+
+```json
+{
+  "vector": "qdrant",
+  "graph": "neo4j",
+  "bm25": "bm25_index"
+}
+```
+
+Graph store paths keep two shapes:
+
+- `nodes` / `relations`: stable display summary, `input -> linked entity -> problem`.
+- `storePath.nodes` / `storePath.relations`: raw nodes and relations returned by Neo4j.
 
 `contextPreview` 只在 `debug=true` 時回傳，避免正式 UI 每次暴露完整 prompt context。
 

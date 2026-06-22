@@ -68,6 +68,7 @@ retrievalConfig
 retrievalTrace
 evidenceBundle
 contextPreview
+retrievalBackend
 ```
 
 `contextPreview` 只在 debug mode 回傳：
@@ -75,12 +76,6 @@ contextPreview
 ```http
 POST /api/analysis?debug=true
 ```
-
-FastAPI runtime store mode is not part of the current API contract. The Python
-retrieval pipeline supports injecting `vector_store`, `bm25_store`, and
-`graph_store`, but the public API still constructs the default local fallback
-pipeline. Qdrant, Neo4j, and BM25Store runtime wiring belongs to the next
-End-to-End Store-Backed Demo phase.
 
 ### Retrieval Trace
 
@@ -92,13 +87,43 @@ End-to-End Store-Backed Demo phase.
     "keywords": ["unweighted", "graph", "shortest", "path", "bfs"]
   },
   "entityLinking": [],
-  "vectorCandidates": [],
-  "graphCandidates": [],
-  "bm25Candidates": [],
+  "candidateSources": {
+    "vector": "qdrant",
+    "graph": "neo4j",
+    "bm25": "bm25_index"
+  },
+  "vectorCandidates": [
+    {
+      "id": "leetcode-994",
+      "source": "vector",
+      "candidateSource": "qdrant"
+    }
+  ],
+  "graphCandidates": [
+    {
+      "id": "leetcode-994",
+      "source": "graph",
+      "candidateSource": "neo4j"
+    }
+  ],
+  "bm25Candidates": [
+    {
+      "id": "leetcode-994",
+      "source": "bm25",
+      "candidateSource": "bm25_index"
+    }
+  ],
   "fusionScores": [],
   "rerankerScores": []
 }
 ```
+
+`candidateSource` is only added when `debug=true`. Non-debug responses keep the
+existing `retrievalTrace` shape and omit `retrievalBackend`.
+
+Store-backed vector and BM25 candidates are chunk-level hits and may omit full
+answers or solution hints. The graph lane still uses the runtime document set
+as candidates in this phase.
 
 Store-backed graph paths use the same display summary as local graph paths:
 `input -> linked entity -> problem`. When the graph store returns a raw path, the

@@ -20,6 +20,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "docker: requires local Docker services and seeded stores",
+]
 
 [tool.ruff]
 line-length = 100
