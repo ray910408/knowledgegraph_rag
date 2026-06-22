@@ -60,9 +60,19 @@ class JsonBM25Store:
         for raw in raw_documents:
             if not isinstance(raw, dict):
                 raise RuntimeRetrievalError(f"BM25 document must be an object in: {path}")
-            document_id = str(raw["id"])
+            document_id_value = raw.get("id")
+            if document_id_value is None:
+                raise RuntimeRetrievalError(f"BM25 document must contain an id in: {path}")
+            raw_payload = raw.get("payload")
+            if raw_payload is None:
+                document_payload = {}
+            elif not isinstance(raw_payload, dict):
+                raise RuntimeRetrievalError(f"BM25 document payload must be an object in: {path}")
+            else:
+                document_payload = dict(raw_payload)
+
+            document_id = str(document_id_value)
             text = str(raw.get("text") or "")
-            document_payload = dict(raw.get("payload") or {})
             if "problemId" not in document_payload and raw.get("problemId") is not None:
                 document_payload["problemId"] = str(raw["problemId"])
             documents.append(
@@ -117,30 +127,32 @@ def build_runtime_retrieval(
             ),
             candidate_sources={"vector": "local", "graph": "local", "bm25": "local"},
         )
+    elif resolved.backend == "stores":
+        # Qdrant and Neo4j constructors do not intentionally perform health checks here.
+        # Connection problems may surface when the first query executes.
+        vector_store = QdrantVectorStore(
+            url=resolved.qdrant_url,
+            collection_name=resolved.qdrant_collection,
+        )
+        graph_store = Neo4jGraphStore(
+            uri=resolved.neo4j_uri,
+            user=resolved.neo4j_user,
+            password=resolved.neo4j_password,
+        )
+        bm25_store = JsonBM25Store.from_path(resolved.bm25_index_path)
+        return RuntimeRetrieval(
+            backend="stores",
+            pipeline=OnlineQueryPipeline(
+                documents=documents,
+                embedding_provider=embedding_provider,
+                vector_store=vector_store,
+                graph_store=graph_store,
+                bm25_store=bm25_store,
+            ),
+            candidate_sources={"vector": "qdrant", "graph": "neo4j", "bm25": "bm25_index"},
+        )
 
-    # Qdrant and Neo4j constructors do not intentionally perform health checks here.
-    # Connection problems may surface when the first query executes.
-    vector_store = QdrantVectorStore(
-        url=resolved.qdrant_url,
-        collection_name=resolved.qdrant_collection,
-    )
-    graph_store = Neo4jGraphStore(
-        uri=resolved.neo4j_uri,
-        user=resolved.neo4j_user,
-        password=resolved.neo4j_password,
-    )
-    bm25_store = JsonBM25Store.from_path(resolved.bm25_index_path)
-    return RuntimeRetrieval(
-        backend="stores",
-        pipeline=OnlineQueryPipeline(
-            documents=documents,
-            embedding_provider=embedding_provider,
-            vector_store=vector_store,
-            graph_store=graph_store,
-            bm25_store=bm25_store,
-        ),
-        candidate_sources={"vector": "qdrant", "graph": "neo4j", "bm25": "bm25_index"},
-    )
+    raise RuntimeRetrievalError(f"unsupported retrieval backend: {resolved.backend}")
 
 
 def add_runtime_debug_trace(

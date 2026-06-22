@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import ClassVar, Sequence
 
@@ -181,6 +182,26 @@ def test_json_bm25_store_rejects_non_object_index(tmp_path):
         JsonBM25Store.from_path(index_path)
 
 
+@pytest.mark.parametrize(
+    "document",
+    (
+        {"text": "missing id"},
+        {"id": "bad-payload", "payload": []},
+    ),
+)
+def test_json_bm25_store_rejects_malformed_document_entries(tmp_path, document):
+    from backend.app.retrieval.runtime import JsonBM25Store, RuntimeRetrievalError
+
+    index_path = tmp_path / "bm25_index.json"
+    index_path.write_text(
+        json.dumps({"documents": [document]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeRetrievalError, match="BM25 document"):
+        JsonBM25Store.from_path(index_path)
+
+
 def test_json_bm25_store_can_accept_runtime_documents_after_loading(tmp_path):
     from backend.app.retrieval.runtime import JsonBM25Store
 
@@ -219,6 +240,27 @@ def test_build_runtime_retrieval_local_does_not_construct_external_stores(monkey
     assert configured.candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
     assert result.vector_candidates
     assert result.bm25_candidates
+
+
+def test_build_runtime_retrieval_rejects_invalid_settings_backend(monkeypatch):
+    from backend.app.retrieval import runtime
+
+    def fail_qdrant(**kwargs):
+        raise AssertionError("invalid backend must not construct Qdrant")
+
+    def fail_neo4j(**kwargs):
+        raise AssertionError("invalid backend must not construct Neo4j")
+
+    monkeypatch.setattr(runtime, "QdrantVectorStore", fail_qdrant)
+    monkeypatch.setattr(runtime, "Neo4jGraphStore", fail_neo4j)
+    settings = runtime.RuntimeRetrievalSettings(backend="bad")  # type: ignore[arg-type]
+
+    with pytest.raises(runtime.RuntimeRetrievalError, match="unsupported retrieval backend"):
+        runtime.build_runtime_retrieval(
+            settings=settings,
+            documents=_documents(),
+            embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+        )
 
 
 def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatch, tmp_path):
@@ -275,11 +317,11 @@ def test_add_runtime_debug_trace_labels_candidate_sources():
     from backend.app.retrieval.runtime import add_runtime_debug_trace
 
     trace = {
-        "vectorCandidates": [{"id": "v"}],
-        "graphCandidates": [{"id": "g"}],
-        "bm25Candidates": [{"id": "b"}],
-        "fusionScores": [{"id": "h"}],
-        "rerankerScores": [{"id": "r"}],
+        "vectorCandidates": [{"id": "v", "source": "vector"}],
+        "graphCandidates": [{"id": "g", "source": "graph"}],
+        "bm25Candidates": [{"id": "b", "source": "bm25"}],
+        "fusionScores": [{"id": "h", "source": "hybrid"}],
+        "rerankerScores": [{"id": "r", "source": "hybrid"}],
     }
 
     labeled = add_runtime_debug_trace(
@@ -297,3 +339,8 @@ def test_add_runtime_debug_trace_labels_candidate_sources():
     assert labeled["bm25Candidates"][0]["candidateSource"] == "bm25_index"
     assert labeled["fusionScores"][0]["candidateSource"] == "hybrid"
     assert labeled["rerankerScores"][0]["candidateSource"] == "hybrid"
+    assert labeled["vectorCandidates"][0]["source"] == "vector"
+    assert labeled["graphCandidates"][0]["source"] == "graph"
+    assert labeled["bm25Candidates"][0]["source"] == "bm25"
+    assert labeled["fusionScores"][0]["source"] == "hybrid"
+    assert labeled["rerankerScores"][0]["source"] == "hybrid"
