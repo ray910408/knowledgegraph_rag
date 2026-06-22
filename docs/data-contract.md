@@ -4,6 +4,8 @@
 
 `data/raw/*.json` 可放單一 object、array，或 `{ "problems": [...] }`。
 
+Repo 內建 `data/raw/programming_problems.json` 作為可執行的 seed fixture。這個檔案必須保持 UTF-8 readable zh-Hant，中文內容不要寫成 `\uXXXX` escape。
+
 必填欄位：
 
 ```text

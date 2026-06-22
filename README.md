@@ -34,6 +34,8 @@ CLI：
 python -m backend.app.ingestion build --input data/raw --processed data/processed --target all
 ```
 
+Repo 內建 `data/raw/programming_problems.json` 作為 UTF-8 zh-Hant seed 資料，可直接用來產生本機 processed artifacts。
+
 `--target` 可用：
 
 ```text
@@ -125,10 +127,13 @@ stays on the current mock-backed `LLMResponseGenerator`.
 ## 開發與驗證
 
 ```powershell
+python -m ruff check .
 python -m pytest tests/backend
 cd frontend
 npm.cmd run build
 ```
+
+GitHub Actions 會在 PR 與 `main` push 時執行同等 backend lint/test 與 frontend build；backend CI 透過 `constraints-ci.txt` 固定主要 Python 依賴版本。
 
 也可以用 quick start script 同時啟動 FastAPI 與 Vite：
 

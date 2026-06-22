@@ -1,0 +1,70 @@
+{
+  "problems": [
+    {
+      "id": "uva-10653",
+      "title": "Bombs! NO they are Mines!!",
+      "source": "UVa",
+      "sourceId": "10653",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "BFS",
+        "Queue",
+        "Visited Array"
+      ],
+      "statement": "在有障礙的無權網格中，從起點走到終點並找出最短步數。",
+      "answer": "把每個可走格子視為圖上的節點，使用 BFS 逐層擴展即可得到最短步數。",
+      "solutionHints": [
+        "先建圖或定義四方向鄰居，再 BFS。",
+        "起點入隊時立刻標記 visited。"
+      ],
+      "metadata": {
+        "graphKind": "unweighted grid",
+        "difficulty": "practice"
+      }
+    },
+    {
+      "id": "leetcode-1091",
+      "title": "Shortest Path in Binary Matrix",
+      "source": "LeetCode",
+      "sourceId": "1091",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "BFS",
+        "Queue",
+        "Visited Array"
+      ],
+      "statement": "在二元矩陣的無權圖上，從左上角走到右下角並找最短路徑長度。",
+      "answer": "用 Queue 做 BFS，按照距離層數擴展八方向鄰居，第一次抵達終點就是最短步數。",
+      "solutionHints": [
+        "先檢查起點與終點是否可走。",
+        "把座標與距離一起放入 Queue。"
+      ],
+      "metadata": {
+        "graphKind": "unweighted grid",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "leetcode-994",
+      "title": "Rotting Oranges",
+      "source": "LeetCode",
+      "sourceId": "994",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "BFS",
+        "Queue",
+        "Visited Array"
+      ],
+      "statement": "多源 BFS 模擬每一分鐘腐爛橘子擴散到相鄰格子的過程。",
+      "answer": "把所有初始腐爛橘子放入 Queue，逐層 BFS 計算時間並避免重複處理格子。",
+      "solutionHints": [
+        "先收集所有起點再開始 BFS。",
+        "入隊時更新狀態，避免重複入隊。"
+      ],
+      "metadata": {
+        "graphKind": "unweighted grid",
+        "difficulty": "medium"
+      }
+    }
+  ]
+}
