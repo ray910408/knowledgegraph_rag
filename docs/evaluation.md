@@ -22,8 +22,14 @@ explainable recommendations than simpler baselines on a fixed dataset.
 ## Controls
 
 - Use the same embedding model and candidate pool for vector-only and hybrid.
+- Run store-backed retrieval tests against the same fixture documents used by
+  local fallback tests, so `VectorStore`, `BM25Store`, and `GraphStore` injection
+  can be compared without changing expected answers.
 - Freeze the test set before tuning ranking weights.
 - Keep LLM output out of scoring unless evaluating explanation readability.
+- Keep Query Understanding rule-based for this phase; real LLM-backed query
+  understanding is a later architecture option, not part of the current
+  retrieval refactor.
 - Record errors by category: missing graph edge, wrong label, weak embedding
   match, ambiguous problem statement, or LLM wording issue.
 

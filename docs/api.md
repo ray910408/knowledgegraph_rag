@@ -76,6 +76,12 @@ contextPreview
 POST /api/analysis?debug=true
 ```
 
+FastAPI runtime store mode is not part of the current API contract. The Python
+retrieval pipeline supports injecting `vector_store`, `bm25_store`, and
+`graph_store`, but the public API still constructs the default local fallback
+pipeline. Qdrant, Neo4j, and BM25Store runtime wiring belongs to the next
+End-to-End Store-Backed Demo phase.
+
 ### Retrieval Trace
 
 ```json
@@ -93,6 +99,10 @@ POST /api/analysis?debug=true
   "rerankerScores": []
 }
 ```
+
+Store-backed graph paths use the same display summary as local graph paths:
+`input -> linked entity -> problem`. When the graph store returns a raw path, the
+raw `nodes` and `relations` are preserved under `storePath`.
 
 ### Evidence Bundle
 

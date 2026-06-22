@@ -82,6 +82,19 @@ flowchart TD
 - `ContextBuilder`
 - `LLMResponseGenerator`
 
+Store-backed online retrieval is supported at the Python pipeline boundary.
+`VectorSearchService`, `BM25SearchService`, and `GraphSearchService` accept
+optional `VectorStore`, `BM25Store`, and `GraphStore` implementations. When a
+store is injected, the service reads candidates from that store; when no store
+is provided, the local document fallback remains active. `OnlineQueryPipeline`
+forwards optional `vector_store`, `bm25_store`, and `graph_store` constructor
+arguments into those services.
+
+Graph store paths keep two shapes on purpose:
+
+- `nodes` / `relations`: stable display summary, `input -> linked entity -> problem`.
+- `storePath.nodes` / `storePath.relations`: raw nodes and relations returned by the store.
+
 Query embedding 由 `OnlineQueryPipeline` 透過 `EmbeddingProvider` 執行，預設使用 deterministic mock provider，正式設定保留 `BAAI/bge-m3` 作為模型名稱。
 
 API 層的 `POST /api/analysis` 與 `POST /api/v1/analysis` 保留既有 response 欄位，並新增：
@@ -89,6 +102,13 @@ API 層的 `POST /api/analysis` 與 `POST /api/v1/analysis` 保留既有 respons
 - `retrievalTrace`
 - `evidenceBundle`
 - `contextPreview`
+
+FastAPI does not inject runtime stores in this phase. The API still uses the
+default `OnlineQueryPipeline()` local mode. Runtime Qdrant / Neo4j / BM25Store
+injection is left for the next End-to-End Store-Backed Demo, after
+`retrievalTrace`, `evidenceBundle`, and `contextPreview` are stable. Query
+Understanding is still rule-based, and the LLM path still uses the current mock
+response generator rather than a real `LLMProvider`.
 
 `contextPreview` 只在 `debug=true` 時回傳，避免正式 UI 每次暴露完整 prompt context。
 
