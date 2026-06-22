@@ -8,6 +8,17 @@ from pathlib import Path
 from backend.app.ingestion.pipeline import build_ingestion_artifacts
 
 
+def test_committed_programming_problem_seed_is_readable_utf8():
+    seed_path = Path(__file__).resolve().parents[2] / "data" / "raw" / "programming_problems.json"
+    seed_text = seed_path.read_text(encoding="utf-8")
+
+    assert not seed_text.startswith("\ufeff")
+    assert "\ufffd" not in seed_text
+    assert "\\u" not in seed_text
+    assert "在有障礙的無權網格中" in seed_text
+    assert len(json.loads(seed_text)["problems"]) == 3
+
+
 def _write_raw_problem(path: Path) -> None:
     payload = {
         "problems": [
