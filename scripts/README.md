@@ -28,6 +28,9 @@ The script starts:
 - Neo4j at `http://localhost:7474` and `bolt://localhost:7687` when `-Stores` is used
 - Qdrant at `http://localhost:6333` when `-Stores` is used
 
+Override the app ports with `-BackendPort` and `-FrontendPort`. The Vite
+development proxy follows the selected backend port.
+
 Use `-SkipDocker` after Docker services are already running. Use
 `-SkipIngestion` after `data/processed/bm25_index.json`, Qdrant, and Neo4j are
 already seeded.

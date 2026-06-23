@@ -6,9 +6,9 @@
   `GraphStore` implementations while preserving the local document fallback.
 - Store-backed graph trace summaries remain `input -> linked entity -> problem`;
   raw store nodes and relations are preserved under `storePath`.
-- FastAPI runtime store mode is not handled in this round. Injecting Qdrant,
-  Neo4j, and BM25Store into the live API is deferred to the next End-to-End
-  Store-Backed Demo phase.
+- FastAPI runtime store mode was deferred in the previous round. The current
+  End-to-End Store-Backed Demo wires Qdrant, Neo4j, and BM25Store into the live
+  API while preserving the local fallback and existing runtime document set.
 - Query Understanding remains rule-based in this round, so retrieval refactoring
   is not mixed with LLM behavior changes.
 
