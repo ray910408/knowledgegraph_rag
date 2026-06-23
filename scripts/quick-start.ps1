@@ -16,6 +16,7 @@ $FrontendDir = Join-Path $RepoRoot "frontend"
 $RawDataDir = Join-Path $RepoRoot "data\raw"
 $ProcessedDataDir = Join-Path $RepoRoot "data\processed"
 $RetrievalBackend = if ($Stores) { "stores" } else { "local" }
+$BackendOrigin = "http://127.0.0.1:$BackendPort"
 $QdrantUrl = "http://localhost:6333"
 $QdrantCollection = "programming_chunks"
 $Neo4jUri = "bolt://localhost:7687"
@@ -84,7 +85,7 @@ if ($Check) {
     Write-Step "Python: $PythonCommand"
     Write-Step "npm: $NpmCommand"
     Write-Step "Retrieval backend: $RetrievalBackend"
-    Write-Step "Backend URL: http://127.0.0.1:$BackendPort"
+    Write-Step "Backend URL: $BackendOrigin"
     Write-Step "Frontend URL: http://127.0.0.1:$FrontendPort"
     if ($Stores) {
         if ($DockerCommand) {
@@ -146,7 +147,7 @@ if ($Stores) {
 
 Write-Step "Starting backend and frontend. Press Ctrl+C to stop."
 Write-Step "Retrieval backend: $RetrievalBackend"
-Write-Step "Backend: http://127.0.0.1:$BackendPort"
+Write-Step "Backend: $BackendOrigin"
 Write-Step "Frontend: http://127.0.0.1:$FrontendPort"
 
 $backendArgs = @(
@@ -183,19 +184,20 @@ $backendJob = Start-Job -Name "knowledgegraph-rag-backend" -ScriptBlock {
     $env:NEO4J_USER = $Neo4jUserValue
     $env:NEO4J_PASSWORD = $Neo4jPasswordValue
     $env:BM25_INDEX_PATH = $Bm25IndexValue
-    & $Python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port $Port
+    & $Python -m uvicorn backend.app.main:app --host 127.0.0.1 --port $Port
 } -ArgumentList $backendArgs
 
 $frontendJob = Start-Job -Name "knowledgegraph-rag-frontend" -ScriptBlock {
-    param($Frontend, $Port, $Npm)
+    param($Frontend, $Port, $Npm, $BackendOriginValue)
     Set-Location $Frontend
+    $env:VITE_BACKEND_ORIGIN = $BackendOriginValue
     & $Npm run dev -- --host 127.0.0.1 --port $Port
-} -ArgumentList $FrontendDir, $FrontendPort, $NpmCommand
+} -ArgumentList $FrontendDir, $FrontendPort, $NpmCommand, $BackendOrigin
 
 try {
     while ($true) {
         foreach ($job in @($backendJob, $frontendJob)) {
-            Receive-Job -Job $job -Keep | ForEach-Object { Write-Host $_ }
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
             if ($job.State -in @("Failed", "Stopped", "Completed")) {
                 throw "Service stopped: $($job.Name) ($($job.State))"
             }
