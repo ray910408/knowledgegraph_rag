@@ -1,7 +1,27 @@
+from collections.abc import Iterator
+
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.analysis import find_graph_traversal_examples, load_programming_dataset
 from backend.app.main import app
+from backend.app.providers import DeterministicMockEmbeddingProvider
+from backend.app.retrieval.pipeline import OnlineQueryPipeline, RetrievalDocument
+from backend.app.retrieval.runtime import RuntimeRetrieval
+
+
+@pytest.fixture(autouse=True)
+def isolate_runtime_retrieval() -> Iterator[None]:
+    _clear_runtime_retrieval()
+    yield
+    _clear_runtime_retrieval()
+
+
+def _clear_runtime_retrieval() -> None:
+    try:
+        delattr(app.state, "runtime_retrieval")
+    except (AttributeError, KeyError):
+        pass
 
 
 def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
@@ -151,11 +171,24 @@ def test_analysis_response_includes_trace_and_evidence_without_context_by_defaul
     assert "retrievalTrace" in payload
     assert "evidenceBundle" in payload
     assert "contextPreview" not in payload
+    assert "retrievalBackend" not in payload
+    assert "candidateSources" not in payload["retrievalTrace"]
+    for candidate_section in (
+        "vectorCandidates",
+        "graphCandidates",
+        "bm25Candidates",
+        "fusionScores",
+        "rerankerScores",
+    ):
+        assert all(
+            "candidateSource" not in candidate
+            for candidate in payload["retrievalTrace"][candidate_section]
+        )
     assert payload["retrievalTrace"]["queryUnderstanding"]["intent"] == "problem_search"
     assert payload["evidenceBundle"]["similarProblems"]
 
 
-def test_analysis_debug_mode_includes_context_preview():
+def test_analysis_debug_mode_includes_context_preview_and_retrieval_backend():
     client = TestClient(app)
 
     response = client.post(
@@ -165,8 +198,65 @@ def test_analysis_debug_mode_includes_context_preview():
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["retrievalBackend"] == "local"
     assert "contextPreview" in payload
     assert "Query Understanding" in payload["contextPreview"]
+    assert payload["retrievalTrace"]["candidateSources"] == {
+        "vector": "local",
+        "graph": "local",
+        "bm25": "local",
+    }
+    assert payload["retrievalTrace"]["vectorCandidates"][0]["candidateSource"] == "local"
+    assert payload["retrievalTrace"]["bm25Candidates"][0]["candidateSource"] == "local"
+
+
+def test_analysis_debug_mode_uses_configured_runtime_retrieval():
+    app.state.runtime_retrieval = RuntimeRetrieval(
+        backend="stores",
+        pipeline=OnlineQueryPipeline(
+            documents=(
+                RetrievalDocument(
+                    id="fake-runtime-bfs",
+                    source="FakeJudge",
+                    source_id="runtime-1",
+                    title="Fake Runtime BFS",
+                    text="BFS shortest path with a queue in a graph.",
+                    answer="Use a fake runtime queue answer.",
+                    concepts=("BFS", "Queue"),
+                    problem_type="Graph Traversal",
+                ),
+            ),
+            embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+        ),
+        candidate_sources={
+            "vector": "fake_vector",
+            "graph": "fake_graph",
+            "bm25": "fake_bm25",
+        },
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "BFS shortest path queue graph traversal"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    trace = payload["retrievalTrace"]
+    assert payload["retrievalBackend"] == "stores"
+    assert trace["candidateSources"] == {
+        "vector": "fake_vector",
+        "graph": "fake_graph",
+        "bm25": "fake_bm25",
+    }
+    assert trace["vectorCandidates"][0]["id"] == "fake-runtime-bfs"
+    assert trace["graphCandidates"][0]["id"] == "fake-runtime-bfs"
+    assert trace["bm25Candidates"][0]["id"] == "fake-runtime-bfs"
+    assert trace["vectorCandidates"][0]["candidateSource"] == "fake_vector"
+    assert trace["graphCandidates"][0]["candidateSource"] == "fake_graph"
+    assert trace["bm25Candidates"][0]["candidateSource"] == "fake_bm25"
+    assert payload["evidenceBundle"]["similarProblems"][0]["id"] == "fake-runtime-bfs"
 
 
 def test_analysis_unknown_explicit_problem_id_returns_404():

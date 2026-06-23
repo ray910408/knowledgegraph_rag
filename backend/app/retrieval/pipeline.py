@@ -296,8 +296,13 @@ class HybridFusionService:
         scores: dict[str, float] = defaultdict_float()
         sources: dict[str, set[str]] = {}
         for source, candidates in groups.items():
-            max_score = max((candidate.score for candidate in candidates), default=0.0) or 1.0
+            best_by_id: dict[str, RetrievalCandidate] = {}
             for candidate in candidates:
+                current = best_by_id.get(candidate.id)
+                if current is None or candidate.score > current.score:
+                    best_by_id[candidate.id] = candidate
+            max_score = max((candidate.score for candidate in best_by_id.values()), default=0.0) or 1.0
+            for candidate in best_by_id.values():
                 by_id.setdefault(candidate.id, candidate)
                 scores[candidate.id] = scores.get(candidate.id, 0.0) + (
                     self._weights[source] * (candidate.score / max_score)

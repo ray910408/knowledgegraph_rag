@@ -320,6 +320,46 @@ def test_hybrid_fusion_dedupes_and_normalizes_scores_then_reranks():
     assert reranked[0].payload["rerankerScore"] >= reranked[1].payload["rerankerScore"]
 
 
+def test_hybrid_fusion_counts_each_source_once_per_problem():
+    candidates = HybridFusionService().fuse(
+        vector_candidates=(
+            RetrievalCandidate(
+                id="leetcode-994",
+                title="Rotting Oranges",
+                source="vector",
+                score=0.9,
+                text="BFS queue chunk one",
+                concepts=("BFS", "Queue"),
+            ),
+            RetrievalCandidate(
+                id="leetcode-994",
+                title="Rotting Oranges",
+                source="vector",
+                score=0.8,
+                text="BFS queue chunk two",
+                concepts=("BFS", "Queue"),
+            ),
+            RetrievalCandidate(
+                id="leetcode-300",
+                title="Longest Increasing Subsequence",
+                source="vector",
+                score=0.6,
+                text="dynamic programming",
+                concepts=("Dynamic Programming",),
+            ),
+        ),
+        graph_candidates=(),
+        bm25_candidates=(),
+        top_k=2,
+    )
+
+    by_id = {candidate.id: candidate for candidate in candidates}
+
+    assert by_id["leetcode-994"].score == 0.35
+    assert by_id["leetcode-994"].payload["sources"] == ["vector"]
+    assert by_id["leetcode-300"].score == round(0.35 * (0.6 / 0.9), 6)
+
+
 def test_evidence_and_context_builders_create_stable_llm_context():
     documents = _documents()
     result = OnlineQueryPipeline(documents=documents).run(

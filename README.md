@@ -65,6 +65,47 @@ data/processed/neo4j_graph.json
 data/processed/manifest.json
 ```
 
+## Runtime Retrieval Backend
+
+FastAPI supports two retrieval backends:
+
+```text
+RETRIEVAL_BACKEND=local
+RETRIEVAL_BACKEND=stores
+```
+
+`local` is the default. It uses the local fallback documents and does not
+require Docker.
+
+`stores` creates a Qdrant vector store, a Neo4j graph store, and a BM25 store
+loaded from `data/processed/bm25_index.json`. Use the store-backed quick start
+to seed and run the demo:
+
+```powershell
+.\scripts\quick-start.ps1 -Stores
+```
+
+Debug the active backend and retrieval provenance with:
+
+```powershell
+curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
+  -H "Content-Type: application/json" `
+  -d "{\"input\":\"unweighted graph shortest path BFS\"}"
+```
+
+The debug response includes:
+
+```text
+retrievalBackend
+retrievalTrace.candidateSources.vector = qdrant
+retrievalTrace.candidateSources.graph = neo4j
+retrievalTrace.candidateSources.bm25 = bm25_index
+```
+
+This phase keeps the existing runtime documents as the graph candidate set. It
+does not load `data/processed/problems.json` or require store hits to include
+full answers or solution hints.
+
 ## 線上查詢流程
 
 ```mermaid
@@ -110,19 +151,6 @@ curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
   -H "Content-Type: application/json" `
   -d "{\"input\":\"unweighted graph shortest path BFS\"}"
 ```
-
-### Store-backed retrieval scope
-
-`OnlineQueryPipeline` can receive `vector_store`, `bm25_store`, and
-`graph_store` instances for store-backed online retrieval. The search services
-keep the local documents fallback when a store is not injected, so the default
-API and quick-start demo still run without Docker or external services.
-
-This round does not enable FastAPI runtime store mode. `POST /api/analysis`
-still constructs the default local pipeline; wiring Qdrant, Neo4j, and
-BM25Store into the running API is reserved for the next End-to-End Store-Backed
-Demo phase. Query Understanding remains rule-based, and response generation
-stays on the current mock-backed `LLMResponseGenerator`.
 
 ## 開發與驗證
 
