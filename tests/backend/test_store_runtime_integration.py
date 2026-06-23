@@ -26,6 +26,9 @@ def test_store_runtime_can_query_seeded_qdrant_neo4j_and_bm25():
         neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
         neo4j_password=os.getenv("NEO4J_PASSWORD", "password"),
         bm25_index_path=Path(os.getenv("BM25_INDEX_PATH", "data/processed/bm25_index.json")),
+        processed_problems_path=Path(
+            os.getenv("PROCESSED_PROBLEMS_PATH", "data/processed/problems.json")
+        ),
     )
 
     runtime = build_runtime_retrieval(settings=settings)
