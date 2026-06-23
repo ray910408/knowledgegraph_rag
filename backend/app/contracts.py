@@ -95,6 +95,16 @@ class ProblemChunk:
     index: int
     concepts: tuple[str, ...] = ()
     metadata: JsonMap = field(default_factory=dict)
+    answer: str = ""
+    solution_hints: tuple[str, ...] = ()
+    difficulty: str | None = None
+    constraints: tuple[str, ...] = ()
+    examples: tuple[JsonMap, ...] = ()
+    editorial: str | None = None
+    source: str = ""
+    source_id: str = ""
+    title: str = ""
+    problem_type: str = ""
 
     def to_mapping(self) -> JsonMap:
         return {
@@ -105,6 +115,16 @@ class ProblemChunk:
             "index": self.index,
             "concepts": list(self.concepts),
             "metadata": dict(self.metadata),
+            "answer": self.answer,
+            "solutionHints": list(self.solution_hints),
+            "difficulty": self.difficulty,
+            "constraints": list(self.constraints),
+            "examples": [dict(example) for example in self.examples],
+            "editorial": self.editorial,
+            "source": self.source,
+            "sourceId": self.source_id,
+            "title": self.title,
+            "problemType": self.problem_type,
         }
 
 
