@@ -5,6 +5,7 @@ import type {
   EvidenceEdge,
   EvidenceNode,
   EvidencePath,
+  GraphPathTrace,
   InputKind,
   RequiredConcept,
   RetrievalConfig,
@@ -150,6 +151,26 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function asStringRecord(value: unknown): Record<string, string> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const entries = Object.entries(record)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function firstPresent(record: UnknownRecord, keys: string[]): unknown {
+  for (const key of keys) {
+    if (key in record) {
+      return record[key];
+    }
+  }
+  return undefined;
+}
+
 function pickArray(record: UnknownRecord, keys: string[]): unknown[] {
   for (const key of keys) {
     const value = record[key];
@@ -265,15 +286,30 @@ function normalizeEvidencePath(value: unknown, index: number): EvidencePath | nu
   };
 }
 
+function normalizeGraphPath(value: unknown): GraphPathTrace | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  return {
+    nodes: Array.isArray(record.nodes) ? record.nodes : [],
+    relations: Array.isArray(record.relations) ? record.relations : [],
+    rationale: asString(record.rationale, ""),
+    score: typeof record.score === "number" && Number.isFinite(record.score) ? record.score : undefined,
+    storePath: asRecord(record.storePath ?? record.store_path) ?? undefined
+  };
+}
+
 function normalizeCandidate(value: unknown): TraceCandidate | null {
   const record = asRecord(value);
   if (!record) {
     return null;
   }
   return {
-    id: asString(record.id ?? record.problemId, ""),
+    id: asString(record.id ?? record.problemId ?? record.problem_id, ""),
     title: asString(record.title, ""),
     source: asString(record.source, ""),
+    candidateSource: asString(record.candidateSource ?? record.candidate_source, ""),
     score: asNumber(record.score, 0),
     concepts: asStringArray(record.concepts),
     problemType: asString(record.problemType ?? record.problem_type, ""),
@@ -301,7 +337,8 @@ function normalizeTrace(value: unknown): RetrievalTrace {
     graphCandidates: candidates("graphCandidates"),
     bm25Candidates: candidates("bm25Candidates"),
     fusionScores: candidates("fusionScores"),
-    rerankerScores: candidates("rerankerScores")
+    rerankerScores: candidates("rerankerScores"),
+    candidateSources: asStringRecord(firstPresent(record, ["candidateSources", "candidate_sources"]))
   };
 }
 
@@ -309,7 +346,9 @@ function normalizeEvidenceBundle(value: unknown): EvidenceBundle {
   const record = asRecord(value) ?? {};
   return {
     similarProblems: pickArray(record, ["similarProblems"]).filter((item): item is UnknownRecord => asRecord(item) !== null),
-    graphPaths: pickArray(record, ["graphPaths"]).filter((item): item is UnknownRecord => asRecord(item) !== null),
+    graphPaths: pickArray(record, ["graphPaths", "graph_paths"])
+      .map(normalizeGraphPath)
+      .filter((item): item is GraphPathTrace => item !== null),
     algorithmEvidence: asStringArray(record.algorithmEvidence),
     dataStructureEvidence: asStringArray(record.dataStructureEvidence),
     patternEvidence: asStringArray(record.patternEvidence),
