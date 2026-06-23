@@ -69,6 +69,16 @@ problemId
 kind
 text
 index
+answer
+solutionHints
+difficulty
+constraints
+examples
+editorial
+source
+sourceId
+title
+problemType
 concepts
 metadata
 ```
@@ -130,6 +140,26 @@ HAS_PATTERN
 
 本地 BM25 artifact，包含 documents、tokens 與 chunk payload。
 
+BM25 document payloads include the enriched evidence fields used at runtime:
+
+```text
+answer
+solutionHints
+difficulty
+constraints
+examples
+editorial
+source
+sourceId
+title
+problemType
+concepts
+```
+
+This is the raw BM25 artifact/store payload shape. Normalized retrieval
+candidate `payload` maps `source` to `documentSource`; `storePayload` retains
+`source`.
+
 ### `qdrant_vectors.json`
 
 欄位：
@@ -146,6 +176,26 @@ id
 vector
 payload
 ```
+
+Qdrant payload includes chunk identity plus enriched evidence fields:
+
+```text
+answer
+solutionHints
+difficulty
+constraints
+examples
+editorial
+source
+sourceId
+title
+problemType
+concepts
+```
+
+This is the raw Qdrant artifact/store payload shape. Normalized retrieval
+candidate `payload` maps `source` to `documentSource`; `storePayload` retains
+`source`.
 
 ### `neo4j_graph.json`
 
@@ -179,12 +229,19 @@ storeCandidateId
 storePayload
 ```
 
+Vector and BM25 normalized candidate `payload` values can include enriched
+evidence fields such as `answer`, `solutionHints`, `difficulty`, `constraints`,
+`examples`, `editorial`, `documentSource`, `sourceId`, `title`, `problemType`,
+and `concepts`. Raw `storePayload` values retain the processed/store field
+name `source` instead of `documentSource`.
+
 Store-backed graph paths preserve both the stable summary and the raw store path:
 
 ```json
 {
   "nodes": ["input", "concept:bfs", "leetcode-994"],
   "relations": ["MENTIONS", "REQUIRED_BY"],
+  "rationale": "BFS is linked to the matching problem through the graph store.",
   "storePath": {
     "nodes": ["leetcode-994", "concept:bfs"],
     "relations": ["REQUIRES"]
@@ -205,6 +262,14 @@ patternEvidence
 commonMistakes
 ```
 
+`graphPaths` entries can include `nodes`, `relations`, `rationale`, and
+`storePath`. `storePath` preserves the raw store-returned nodes and relations
+while `nodes` / `relations` keep the stable display summary.
+
 ## Context Preview Contract
 
 `contextPreview` 是送入 `LLMProvider` 前整理好的 prompt context。它只會在 `debug=true` 時回傳。
+
+The context builder can use enriched candidate payload fields such as `answer`,
+`solutionHints`, `difficulty`, and `constraints`, plus graph path `rationale`.
+Non-debug responses omit `contextPreview`.

@@ -77,6 +77,9 @@ retrievalBackend
 POST /api/analysis?debug=true
 ```
 
+When present, it may include enriched evidence such as answer,
+solutionHints, difficulty, constraints, and graphPaths.
+
 ### Retrieval Trace
 
 ```json
@@ -96,7 +99,16 @@ POST /api/analysis?debug=true
     {
       "id": "leetcode-994",
       "source": "vector",
-      "candidateSource": "qdrant"
+      "candidateSource": "qdrant",
+      "payload": {
+        "title": "Rotting Oranges",
+        "documentSource": "LeetCode",
+        "sourceId": "994",
+        "answer": "Use BFS from all initially rotten oranges.",
+        "solutionHints": ["Push all sources first."],
+        "difficulty": "Medium",
+        "constraints": ["1 <= m, n <= 10"]
+      }
     }
   ],
   "graphCandidates": [
@@ -110,7 +122,16 @@ POST /api/analysis?debug=true
     {
       "id": "leetcode-994",
       "source": "bm25",
-      "candidateSource": "bm25_index"
+      "candidateSource": "bm25_index",
+      "payload": {
+        "title": "Rotting Oranges",
+        "documentSource": "LeetCode",
+        "sourceId": "994",
+        "answer": "Use BFS from all initially rotten oranges.",
+        "solutionHints": ["Push all sources first."],
+        "difficulty": "Medium",
+        "constraints": ["1 <= m, n <= 10"]
+      }
     }
   ],
   "fusionScores": [],
@@ -121,13 +142,17 @@ POST /api/analysis?debug=true
 `candidateSource` is only added when `debug=true`. Non-debug responses keep the
 existing `retrievalTrace` shape and omit `retrievalBackend`.
 
-Store-backed vector and BM25 candidates are chunk-level hits and may omit full
-answers or solution hints. The graph lane still uses the runtime document set
-as candidates in this phase.
+Store-backed vector and BM25 normalized candidate `payload` values can include
+enriched fields such as answer, solutionHints, difficulty, constraints,
+examples, editorial, documentSource, sourceId, title, problemType, and concepts.
+Raw `storePayload` may retain the processed/store field name `source`.
+`stores` mode uses processed runtime documents from `PROCESSED_PROBLEMS_PATH`
+for the online candidate set.
 
 Store-backed graph paths use the same display summary as local graph paths:
 `input -> linked entity -> problem`. When the graph store returns a raw path, the
-raw `nodes` and `relations` are preserved under `storePath`.
+raw `nodes` and `relations` are preserved under `storePath`. Graph paths may
+also include a `rationale` used by debug `contextPreview`.
 
 ### Evidence Bundle
 
