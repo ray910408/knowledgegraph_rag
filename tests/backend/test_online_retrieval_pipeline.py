@@ -35,6 +35,11 @@ def _documents() -> tuple[RetrievalDocument, ...]:
             answer="Use BFS from all rotten oranges.",
             concepts=("BFS", "Queue"),
             problem_type="Graph Traversal",
+            solution_hints=("Push all rotten oranges first.", "Expand one BFS layer per minute."),
+            difficulty="Medium",
+            constraints=("1 <= m, n <= 10",),
+            examples=({"input": "grid", "output": "4"},),
+            editorial="Use multi-source BFS from all rotten cells.",
         ),
         RetrievalDocument(
             id="leetcode-300",
@@ -54,6 +59,16 @@ def _store_payload(document: RetrievalDocument) -> dict[str, object]:
         "problemId": document.id,
         "kind": "statement",
         "text": document.text,
+        "answer": document.answer,
+        "solutionHints": list(document.solution_hints),
+        "difficulty": document.difficulty,
+        "constraints": list(document.constraints),
+        "examples": [dict(example) for example in document.examples],
+        "editorial": document.editorial,
+        "source": document.source,
+        "sourceId": document.source_id,
+        "title": document.title,
+        "problemType": document.problem_type,
         "concepts": list(document.concepts),
         "metadata": {
             "source": document.source,
@@ -185,6 +200,37 @@ def test_bm25_search_service_can_use_bm25_store():
     assert candidates[0].source == "bm25"
     assert candidates[0].payload["storeCandidateId"] == "leetcode-994:statement:0"
     assert candidates[0].payload["answer"] == "Use BFS from all rotten oranges."
+
+
+def test_store_candidate_payload_preserves_enriched_evidence_fields():
+    documents = _documents()
+    embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
+    vector_store = _build_vector_store(documents, embedding_provider)
+    bm25_store = _build_bm25_store(documents)
+    understanding = QueryUnderstandingService().understand("BFS queue shortest path")
+
+    vector_candidate = VectorSearchService(
+        documents,
+        embedding_provider,
+        vector_store=vector_store,
+    ).search(understanding, top_k=1)[0]
+    bm25_candidate = BM25SearchService(documents, bm25_store=bm25_store).search(
+        understanding,
+        top_k=1,
+    )[0]
+
+    for candidate in (vector_candidate, bm25_candidate):
+        assert candidate.payload["answer"] == "Use BFS from all rotten oranges."
+        assert candidate.payload["solutionHints"] == [
+            "Push all rotten oranges first.",
+            "Expand one BFS layer per minute.",
+        ]
+        assert candidate.payload["difficulty"] == "Medium"
+        assert candidate.payload["constraints"] == ["1 <= m, n <= 10"]
+        assert candidate.payload["sourceId"] == "994"
+        assert candidate.payload["title"] == "Rotting Oranges"
+        assert candidate.payload["problemType"] == "Graph Traversal"
+        assert candidate.payload["concepts"] == ["BFS", "Queue"]
 
 
 def test_graph_search_service_can_use_graph_store():
@@ -379,6 +425,50 @@ def test_evidence_and_context_builders_create_stable_llm_context():
     assert "Query Understanding" in context
     assert "Rotting Oranges" in context
     assert "Common Mistakes" in context
+
+
+def test_context_builder_includes_enriched_candidate_evidence():
+    candidate = RetrievalCandidate(
+        id="leetcode-994",
+        title="Rotting Oranges",
+        source="hybrid",
+        score=0.97,
+        text="Multi-source BFS with a queue on a grid.",
+        concepts=("BFS", "Queue"),
+        problem_type="Graph Traversal",
+        payload={
+            "answer": "Use BFS from all rotten oranges.",
+            "solutionHints": ["Push all rotten oranges first."],
+            "difficulty": "Medium",
+            "constraints": ["1 <= m, n <= 10"],
+            "documentSource": "LeetCode",
+            "sourceId": "994",
+        },
+    )
+    understanding = QueryUnderstandingService().understand("BFS queue shortest path")
+    graph_paths = (
+        {
+            "nodes": ["input", 42, "leetcode-994"],
+            "relations": ["MENTIONS", 7],
+            "rationale": "linked BFS to Rotting Oranges",
+        },
+    )
+
+    evidence = EvidenceBuilder().build((candidate,), graph_paths)
+    context = ContextBuilder().build(understanding, evidence)
+
+    similar_problem = evidence.to_mapping()["similarProblems"][0]
+    assert similar_problem["answerHint"] == "Use BFS from all rotten oranges."
+    assert similar_problem["solutionHints"] == ["Push all rotten oranges first."]
+    assert similar_problem["difficulty"] == "Medium"
+    assert similar_problem["constraints"] == ["1 <= m, n <= 10"]
+    assert "answer: Use BFS from all rotten oranges." in context
+    assert "solution hint: Push all rotten oranges first." in context
+    assert "difficulty: Medium" in context
+    assert "constraints: 1 <= m, n <= 10" in context
+    assert "input -> 42 -> leetcode-994" in context
+    assert "relations=MENTIONS, 7" in context
+    assert "rationale=linked BFS to Rotting Oranges" in context
 
 
 def test_online_pipeline_trace_has_required_debug_sections():
