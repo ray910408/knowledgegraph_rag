@@ -24,6 +24,12 @@ class RetrievalDocument:
     answer: str
     concepts: tuple[str, ...]
     problem_type: str
+    solution_hints: tuple[str, ...] = ()
+    difficulty: str = ""
+    constraints: tuple[str, ...] = ()
+    examples: tuple[JsonMap, ...] = ()
+    editorial: str = ""
+    metadata: JsonMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -607,6 +613,9 @@ def _load_default_documents() -> tuple[RetrievalDocument, ...]:
             answer=problem.answer,
             concepts=problem.concepts,
             problem_type=problem.problem_type,
+            solution_hints=problem.solution_hints,
+            difficulty=problem.metadata.get("difficulty", ""),
+            metadata=problem.metadata,
         )
         for problem in load_programming_dataset()
     )
