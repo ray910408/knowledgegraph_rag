@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Sequence
 
 from ..contracts import EntityRecord, RelationRecord
@@ -7,6 +8,10 @@ from ..contracts import EntityRecord, RelationRecord
 
 class Neo4jAdapterError(RuntimeError):
     pass
+
+
+def _metadata_json(value: Any) -> str:
+    return json.dumps(dict(value or {}), ensure_ascii=False, sort_keys=True)
 
 
 class Neo4jGraphStore:
@@ -28,7 +33,17 @@ class Neo4jGraphStore:
         self._driver = GraphDatabase.driver(uri, auth=(user, password))
 
     def upsert_entities(self, entities: Sequence[EntityRecord]) -> None:
-        rows = [entity.to_mapping() for entity in entities]
+        rows = [
+            {
+                "id": entity.id,
+                "name": entity.name,
+                "type": entity.type,
+                "aliases": list(entity.aliases),
+                "problemIds": list(entity.problem_ids),
+                "metadataJson": _metadata_json(entity.metadata),
+            }
+            for entity in entities
+        ]
         if not rows:
             return
         with self._driver.session() as session:
@@ -36,13 +51,29 @@ class Neo4jGraphStore:
                 """
                 UNWIND $entities AS entity
                 MERGE (n:KnowledgeEntity {id: entity.id})
-                SET n += entity
+                SET n.id = entity.id,
+                    n.name = entity.name,
+                    n.type = entity.type,
+                    n.aliases = entity.aliases,
+                    n.problemIds = entity.problemIds,
+                    n.metadataJson = entity.metadataJson
                 """,
                 entities=rows,
             )
 
     def upsert_relations(self, relations: Sequence[RelationRecord]) -> None:
-        rows = [relation.to_mapping() for relation in relations]
+        rows = [
+            {
+                "id": relation.id,
+                "sourceId": relation.source_id,
+                "targetId": relation.target_id,
+                "type": relation.type,
+                "weight": relation.weight,
+                "evidence": list(relation.evidence),
+                "metadataJson": _metadata_json(relation.metadata),
+            }
+            for relation in relations
+        ]
         if not rows:
             return
         with self._driver.session() as session:
@@ -52,10 +83,11 @@ class Neo4jGraphStore:
                 MERGE (source:KnowledgeEntity {id: relation.sourceId})
                 MERGE (target:KnowledgeEntity {id: relation.targetId})
                 MERGE (source)-[edge:RELATED {id: relation.id}]->(target)
-                SET edge.type = relation.type,
+                SET edge.id = relation.id,
+                    edge.type = relation.type,
                     edge.weight = relation.weight,
                     edge.evidence = relation.evidence,
-                    edge.metadata = relation.metadata
+                    edge.metadataJson = relation.metadataJson
                 """,
                 relations=rows,
             )

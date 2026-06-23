@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -134,8 +135,17 @@ def test_ingestion_cli_supports_json_target(tmp_path):
 def test_ingestion_cli_requires_fallback_for_docker_targets(tmp_path):
     raw_dir = tmp_path / "raw"
     processed_dir = tmp_path / "processed"
+    fake_modules_dir = tmp_path / "fake-modules"
+    fake_qdrant_client = fake_modules_dir / "qdrant_client"
     raw_dir.mkdir()
+    fake_qdrant_client.mkdir(parents=True)
     _write_raw_problem(raw_dir / "problems.json")
+    (fake_qdrant_client / "__init__.py").write_text(
+        'raise ImportError("qdrant-client intentionally unavailable for this test")\n',
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(fake_modules_dir) + os.pathsep + env.get("PYTHONPATH", "")
 
     completed = subprocess.run(
         [
@@ -152,6 +162,7 @@ def test_ingestion_cli_requires_fallback_for_docker_targets(tmp_path):
         ],
         check=False,
         cwd=Path(__file__).resolve().parents[2],
+        env=env,
         text=True,
         capture_output=True,
     )

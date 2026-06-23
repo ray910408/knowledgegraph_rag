@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from backend.app.adapters.in_memory import InMemoryBM25Store, InMemoryGraphStore, InMemoryVectorStore
 from backend.app.adapters.neo4j import Neo4jGraphStore
 from backend.app.adapters.qdrant import QdrantVectorStore
@@ -122,7 +124,18 @@ def test_neo4j_graph_store_uses_injected_driver_without_docker():
 
     driver = FakeDriver()
     store = Neo4jGraphStore(driver=driver)
-    store.upsert_entities((EntityRecord(id="concept:bfs", name="BFS", type="algorithm"),))
+    store.upsert_entities(
+        (
+            EntityRecord(
+                id="concept:bfs",
+                name="BFS",
+                type="algorithm",
+                aliases=("Breadth First Search",),
+                problem_ids=("leetcode-994",),
+                metadata={"source": "測試", "nested": {"level": 1}},
+            ),
+        )
+    )
     store.upsert_relations(
         (
             RelationRecord(
@@ -130,6 +143,9 @@ def test_neo4j_graph_store_uses_injected_driver_without_docker():
                 source_id="leetcode-994",
                 target_id="concept:bfs",
                 type="REQUIRES",
+                weight=0.8,
+                evidence=("uses queue",),
+                metadata={"origin": "測試", "nested": {"safe": True}},
             ),
         )
     )
@@ -137,3 +153,30 @@ def test_neo4j_graph_store_uses_injected_driver_without_docker():
 
     assert paths == ({"nodes": ["a", "b"], "relations": ["REQUIRES"], "score": 1.0},)
     assert len(driver.session_instance.calls) == 3
+    entity_query, entity_params = driver.session_instance.calls[0]
+    relation_query, relation_params = driver.session_instance.calls[1]
+    entity_row = entity_params["entities"][0]
+    relation_row = relation_params["relations"][0]
+
+    assert "SET n += entity" not in entity_query
+    assert "metadata = relation.metadata" not in relation_query
+    assert set(entity_row) == {"id", "name", "type", "aliases", "problemIds", "metadataJson"}
+    assert set(relation_row) == {
+        "id",
+        "sourceId",
+        "targetId",
+        "type",
+        "weight",
+        "evidence",
+        "metadataJson",
+    }
+    assert "metadata" not in entity_row
+    assert "metadata" not in relation_row
+    assert not any(isinstance(value, dict) for value in entity_row.values())
+    assert not any(isinstance(value, dict) for value in relation_row.values())
+    assert entity_row["metadataJson"] == json.dumps(
+        {"source": "測試", "nested": {"level": 1}}, ensure_ascii=False, sort_keys=True
+    )
+    assert relation_row["metadataJson"] == json.dumps(
+        {"origin": "測試", "nested": {"safe": True}}, ensure_ascii=False, sort_keys=True
+    )
