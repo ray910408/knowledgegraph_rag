@@ -21,6 +21,10 @@ Check prerequisites and paths without starting services:
 .\scripts\quick-start.ps1 -Check -Stores
 ```
 
+With `-Check -Stores`, the script also prints the resolved Qdrant, Neo4j,
+`BM25_INDEX_PATH`, and `PROCESSED_PROBLEMS_PATH` values. The processed problems
+path defaults to `data/processed/problems.json`.
+
 The script starts:
 
 - FastAPI at `http://127.0.0.1:8000`
@@ -32,5 +36,5 @@ Override the app ports with `-BackendPort` and `-FrontendPort`. The Vite
 development proxy follows the selected backend port.
 
 Use `-SkipDocker` after Docker services are already running. Use
-`-SkipIngestion` after `data/processed/bm25_index.json`, Qdrant, and Neo4j are
-already seeded.
+`-SkipIngestion` after `data/processed/problems.json`,
+`data/processed/bm25_index.json`, Qdrant, and Neo4j are already seeded.

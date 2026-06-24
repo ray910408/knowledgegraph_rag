@@ -399,6 +399,38 @@ button {
   font-size: 13px;
 }
 
+.candidate-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.payload-details,
+.trace-json-details {
+  margin-top: 8px;
+}
+
+.payload-details summary,
+.trace-json-details summary {
+  color: #1849a9;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.json-block {
+  background: #0f172a;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  max-height: 300px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .evidence-bundle,
 .concept-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -527,6 +559,43 @@ button {
 
 .path-card:last-child {
   padding-bottom: 0;
+}
+
+.graph-path-card {
+  background: #f8fafc;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  margin-top: 10px;
+  padding: 12px;
+}
+
+.graph-path-card:first-of-type {
+  margin-top: 0;
+}
+
+.graph-path-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.graph-path-card div {
+  min-width: 0;
+}
+
+.graph-path-card dt {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 760;
+  margin-bottom: 3px;
+}
+
+.graph-path-card dd {
+  color: #172033;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .node-chain {

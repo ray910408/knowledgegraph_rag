@@ -101,6 +101,62 @@ def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
     assert neo4j["relations"] == relations
 
 
+def test_ingestion_enriches_vector_and_bm25_payloads(tmp_path):
+    raw_dir = tmp_path / "raw"
+    processed_dir = tmp_path / "processed"
+    raw_dir.mkdir()
+    raw_payload = {
+        "problems": [
+            {
+                "id": "leetcode-994",
+                "source": "LeetCode",
+                "sourceId": "994",
+                "title": "Rotting Oranges",
+                "problemType": "Graph Traversal",
+                "statement": "Multi-source BFS with a queue on a grid.",
+                "answer": "Use BFS from all rotten oranges.",
+                "solutionHints": ["Push all rotten oranges first."],
+                "concepts": ["BFS", "Queue"],
+                "tags": ["matrix"],
+                "metadata": {"graphKind": "unweighted grid"},
+                "difficulty": "Medium",
+                "constraints": ["1 <= m, n <= 10"],
+                "examples": [{"input": "grid", "output": "4"}],
+                "editorial": "Each BFS layer is one minute.",
+            }
+        ]
+    }
+    (raw_dir / "problems.json").write_text(
+        json.dumps(raw_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    build_ingestion_artifacts(
+        input_dir=raw_dir,
+        processed_dir=processed_dir,
+        target="all",
+        allow_fallback=True,
+    )
+
+    bm25 = json.loads((processed_dir / "bm25_index.json").read_text(encoding="utf-8"))
+    qdrant = json.loads((processed_dir / "qdrant_vectors.json").read_text(encoding="utf-8"))
+    for payload in (
+        bm25["documents"][0]["payload"],
+        qdrant["records"][0]["payload"],
+    ):
+        assert payload["answer"] == "Use BFS from all rotten oranges."
+        assert payload["solutionHints"] == ["Push all rotten oranges first."]
+        assert payload["difficulty"] == "Medium"
+        assert payload["constraints"] == ["1 <= m, n <= 10"]
+        assert payload["examples"] == [{"input": "grid", "output": "4"}]
+        assert payload["editorial"] == "Each BFS layer is one minute."
+        assert payload["source"] == "LeetCode"
+        assert payload["sourceId"] == "994"
+        assert payload["title"] == "Rotting Oranges"
+        assert payload["problemType"] == "Graph Traversal"
+        assert payload["concepts"] == ["BFS", "Queue"]
+
+
 def test_ingestion_cli_supports_json_target(tmp_path):
     raw_dir = tmp_path / "raw"
     processed_dir = tmp_path / "processed"

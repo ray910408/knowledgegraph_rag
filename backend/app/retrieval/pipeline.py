@@ -24,6 +24,12 @@ class RetrievalDocument:
     answer: str
     concepts: tuple[str, ...]
     problem_type: str
+    solution_hints: tuple[str, ...] = ()
+    difficulty: str = ""
+    constraints: tuple[str, ...] = ()
+    examples: tuple[JsonMap, ...] = ()
+    editorial: str = ""
+    metadata: JsonMap = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -374,6 +380,11 @@ class EvidenceBuilder:
                     "score": round(candidate.score, 6),
                     "sharedConcepts": list(candidate.concepts),
                     "answerHint": candidate.payload.get("answer", ""),
+                    "solutionHints": list(_tuple_of_str(candidate.payload.get("solutionHints"))),
+                    "difficulty": str(candidate.payload.get("difficulty") or ""),
+                    "constraints": list(_tuple_of_str(candidate.payload.get("constraints"))),
+                    "source": str(candidate.payload.get("documentSource") or ""),
+                    "sourceId": str(candidate.payload.get("sourceId") or ""),
                 }
                 for candidate in candidates
             ],
@@ -408,11 +419,25 @@ class ContextBuilder:
                 f"- {problem['id']} {problem['title']} "
                 f"(score={problem['score']}, concepts={', '.join(problem['sharedConcepts'])})"
             )
+            if problem.get("answerHint"):
+                lines.append(f"  answer: {problem['answerHint']}")
+            for hint in problem.get("solutionHints", []):
+                lines.append(f"  solution hint: {hint}")
+            if problem.get("difficulty"):
+                lines.append(f"  difficulty: {problem['difficulty']}")
+            if problem.get("constraints"):
+                lines.append(f"  constraints: {', '.join(problem['constraints'])}")
+        lines.extend(["", "Graph Paths"])
+        for path in evidence["graphPaths"]:
+            nodes = [str(node) for node in path.get("nodes", [])]
+            relations = [str(relation) for relation in path.get("relations", [])]
+            rationale = str(path.get("rationale", ""))
+            lines.append(
+                f"- {' -> '.join(nodes)} "
+                f"(relations={', '.join(relations)}, rationale={rationale})"
+            )
         lines.extend(
             [
-                "",
-                "Graph Paths",
-                *[f"- {' -> '.join(path.get('nodes', []))}" for path in evidence["graphPaths"]],
                 "",
                 "Algorithm Evidence",
                 f"- {', '.join(evidence['algorithmEvidence'])}",
@@ -513,11 +538,11 @@ def _candidate_from_document(
         text=document.text,
         concepts=document.concepts,
         problem_type=document.problem_type,
-        payload={
-            "documentSource": document.source,
-            "sourceId": document.source_id,
-            "answer": document.answer,
-        },
+        payload=_candidate_evidence_payload(
+            base_payload={},
+            metadata={},
+            fallback=document,
+        ),
     )
 
 
@@ -534,11 +559,14 @@ def _candidate_from_store_candidate(
         or metadata.get("problemId")
         or candidate.id
     )
-    concepts = _tuple_of_str(payload.get("concepts") or metadata.get("concepts"))
-    title = str(payload.get("title") or metadata.get("title") or problem_id)
-    problem_type = str(payload.get("problemType") or metadata.get("problemType") or "")
+    evidence_payload = _candidate_evidence_payload(
+        base_payload=payload,
+        metadata=metadata,
+    )
+    concepts = tuple(str(item) for item in evidence_payload["concepts"])
+    title = str(evidence_payload["title"] or problem_id)
+    problem_type = str(evidence_payload["problemType"])
     text = str(payload.get("text") or payload.get("statement") or "")
-    answer = str(payload.get("answer") or metadata.get("answer") or "")
 
     return RetrievalCandidate(
         id=problem_id,
@@ -550,12 +578,76 @@ def _candidate_from_store_candidate(
         problem_type=problem_type,
         payload={
             "storeCandidateId": candidate.id,
-            "documentSource": str(payload.get("source") or metadata.get("source") or ""),
-            "sourceId": str(payload.get("sourceId") or metadata.get("sourceId") or ""),
-            "answer": answer,
+            **evidence_payload,
             "storePayload": payload,
         },
     )
+
+
+def _candidate_evidence_payload(
+    *,
+    base_payload: JsonMap,
+    metadata: JsonMap,
+    fallback: RetrievalDocument | None = None,
+) -> JsonMap:
+    title = base_payload.get("title") or metadata.get("title") or (fallback.title if fallback else "")
+    problem_type = (
+        base_payload.get("problemType")
+        or base_payload.get("problem_type")
+        or metadata.get("problemType")
+        or (fallback.problem_type if fallback else "")
+    )
+    concepts = _tuple_of_str(
+        base_payload.get("concepts")
+        or metadata.get("concepts")
+        or (fallback.concepts if fallback else ())
+    )
+    answer = base_payload.get("answer") or metadata.get("answer") or (fallback.answer if fallback else "")
+    source = base_payload.get("source") or metadata.get("source") or (fallback.source if fallback else "")
+    source_id = (
+        base_payload.get("sourceId")
+        or metadata.get("sourceId")
+        or (fallback.source_id if fallback else "")
+    )
+    difficulty = (
+        base_payload.get("difficulty")
+        or metadata.get("difficulty")
+        or (fallback.difficulty if fallback else "")
+    )
+    editorial = (
+        base_payload.get("editorial")
+        or metadata.get("editorial")
+        or (fallback.editorial if fallback else "")
+    )
+    solution_hints = _tuple_of_str(
+        base_payload.get("solutionHints")
+        or base_payload.get("solution_hints")
+        or metadata.get("solutionHints")
+        or (fallback.solution_hints if fallback else ())
+    )
+    constraints = _tuple_of_str(
+        base_payload.get("constraints")
+        or metadata.get("constraints")
+        or (fallback.constraints if fallback else ())
+    )
+    examples = _tuple_of_mapping(
+        base_payload.get("examples")
+        or metadata.get("examples")
+        or (fallback.examples if fallback else ())
+    )
+    return {
+        "documentSource": str(source),
+        "sourceId": str(source_id),
+        "answer": str(answer),
+        "solutionHints": list(solution_hints),
+        "difficulty": str(difficulty),
+        "constraints": list(constraints),
+        "examples": [dict(example) for example in examples],
+        "editorial": str(editorial),
+        "title": str(title),
+        "problemType": str(problem_type),
+        "concepts": list(concepts),
+    }
 
 
 def _normalize_graph_store_path(
@@ -596,6 +688,16 @@ def _tuple_of_str(value: Any) -> tuple[str, ...]:
         return (str(value),)
 
 
+def _tuple_of_mapping(value: Any) -> tuple[JsonMap, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, tuple):
+        return tuple(dict(item) for item in value if isinstance(item, dict))
+    if isinstance(value, list):
+        return tuple(dict(item) for item in value if isinstance(item, dict))
+    return ()
+
+
 def _load_default_documents() -> tuple[RetrievalDocument, ...]:
     return tuple(
         RetrievalDocument(
@@ -607,6 +709,9 @@ def _load_default_documents() -> tuple[RetrievalDocument, ...]:
             answer=problem.answer,
             concepts=problem.concepts,
             problem_type=problem.problem_type,
+            solution_hints=problem.solution_hints,
+            difficulty=problem.metadata.get("difficulty", ""),
+            metadata=problem.metadata,
         )
         for problem in load_programming_dataset()
     )

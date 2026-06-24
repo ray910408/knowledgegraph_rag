@@ -54,10 +54,19 @@ export interface TraceCandidate {
   id: string;
   title?: string;
   source?: string;
+  candidateSource?: string;
   score?: number;
   concepts?: string[];
   problemType?: string;
   payload?: Record<string, unknown>;
+}
+
+export interface GraphPathTrace {
+  nodes?: unknown[];
+  relations?: unknown[];
+  rationale?: string;
+  score?: number;
+  storePath?: Record<string, unknown>;
 }
 
 export interface RetrievalTrace {
@@ -74,11 +83,12 @@ export interface RetrievalTrace {
   bm25Candidates: TraceCandidate[];
   fusionScores: TraceCandidate[];
   rerankerScores: TraceCandidate[];
+  candidateSources?: Record<string, string>;
 }
 
 export interface EvidenceBundle {
   similarProblems: Array<Record<string, unknown>>;
-  graphPaths: Array<Record<string, unknown>>;
+  graphPaths: GraphPathTrace[];
   algorithmEvidence: string[];
   dataStructureEvidence: string[];
   patternEvidence: string[];

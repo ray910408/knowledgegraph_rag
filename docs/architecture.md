@@ -107,18 +107,24 @@ API 層的 `POST /api/analysis` 與 `POST /api/v1/analysis` 保留既有 respons
 
 FastAPI reads `RETRIEVAL_BACKEND` at startup:
 
-- `local`: builds the default `OnlineQueryPipeline()` and keeps the local fallback behavior.
-- `stores`: builds `QdrantVectorStore`, `Neo4jGraphStore`, and `JsonBM25Store`, then injects them into `OnlineQueryPipeline`.
+- `local`: builds the default `OnlineQueryPipeline()` and keeps the local fallback behavior without relying on the processed file.
+- `stores`: builds `QdrantVectorStore`, `Neo4jGraphStore`, and `JsonBM25Store`. It uses `ProcessedProblemDocumentLoader` to load runtime documents from `PROCESSED_PROBLEMS_PATH`, then passes them into `OnlineQueryPipeline(documents=...)` together with the store adapters.
 
-This is runtime wiring, not a full dataset source replacement.
-`OnlineQueryPipeline` still uses the existing runtime documents as the graph
-candidate set. Loading documents from `data/processed/problems.json` belongs in
-a separate follow-up phase.
+`stores` therefore uses `PROCESSED_PROBLEMS_PATH=data/processed/problems.json`
+as the runtime document source while preserving the same logical retrieval
+lanes.
 
-`JsonBM25Store` reads `data/processed/bm25_index.json` immediately. Qdrant and
+`JsonBM25Store` reads `BM25_INDEX_PATH=data/processed/bm25_index.json`
+immediately. Qdrant and
 Neo4j constructors do not intentionally run health checks here, so connection
 failures may surface on the first query unless a future task adds explicit
 health checks.
+
+Normalized Qdrant and BM25 candidate payloads can carry enriched evidence fields:
+`answer`, `solutionHints`, `difficulty`, `constraints`, `examples`,
+`editorial`, `documentSource`, `sourceId`, `title`, `problemType`, and
+`concepts`. Raw processed artifacts and `storePayload` retain the original
+`source` field.
 
 The API keeps the existing logical retrieval lanes: vector, graph, BM25,
 fusion, and rerank. In debug mode, `retrievalTrace.candidateSources` identifies
@@ -137,7 +143,9 @@ Graph store paths keep two shapes:
 - `nodes` / `relations`: stable display summary, `input -> linked entity -> problem`.
 - `storePath.nodes` / `storePath.relations`: raw nodes and relations returned by Neo4j.
 
-`contextPreview` 只在 `debug=true` 時回傳，避免正式 UI 每次暴露完整 prompt context。
+`contextPreview` 只在 `debug=true` 時回傳，避免正式 UI 每次暴露完整 prompt context.
+It can include answer, solutionHints, difficulty,
+constraints, and graph path rationale from the enriched candidate payloads.
 
 ## Provider / Adapter Boundary
 

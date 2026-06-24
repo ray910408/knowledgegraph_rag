@@ -11,6 +11,7 @@ from ..adapters.neo4j import Neo4jGraphStore
 from ..adapters.qdrant import QdrantVectorStore
 from ..providers import EmbeddingProvider
 from ..stores import BM25Document, SearchCandidate
+from .documents import ProcessedProblemDocumentLoader
 from .pipeline import OnlineQueryPipeline, RetrievalDocument
 
 
@@ -31,6 +32,7 @@ class RuntimeRetrievalSettings:
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
     bm25_index_path: Path = Path("data/processed/bm25_index.json")
+    processed_problems_path: Path = Path("data/processed/problems.json")
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,9 @@ def load_runtime_retrieval_settings(
         raise RuntimeRetrievalError(f"unsupported RETRIEVAL_BACKEND: {backend}")
 
     bm25_path = _resolve_repo_path(values.get("BM25_INDEX_PATH", "data/processed/bm25_index.json"))
+    processed_problems_path = _resolve_repo_path(
+        values.get("PROCESSED_PROBLEMS_PATH", "data/processed/problems.json")
+    )
     return RuntimeRetrievalSettings(
         backend=backend,  # type: ignore[arg-type]
         qdrant_url=values.get("QDRANT_URL", "http://localhost:6333"),
@@ -108,6 +113,7 @@ def load_runtime_retrieval_settings(
         neo4j_user=values.get("NEO4J_USER", "neo4j"),
         neo4j_password=values.get("NEO4J_PASSWORD", "password"),
         bm25_index_path=bm25_path,
+        processed_problems_path=processed_problems_path,
     )
 
 
@@ -140,10 +146,15 @@ def build_runtime_retrieval(
             password=resolved.neo4j_password,
         )
         bm25_store = JsonBM25Store.from_path(resolved.bm25_index_path)
+        runtime_documents = (
+            tuple(documents)
+            if documents is not None
+            else ProcessedProblemDocumentLoader(resolved.processed_problems_path).load()
+        )
         return RuntimeRetrieval(
             backend="stores",
             pipeline=OnlineQueryPipeline(
-                documents=documents,
+                documents=runtime_documents,
                 embedding_provider=embedding_provider,
                 vector_store=vector_store,
                 graph_store=graph_store,

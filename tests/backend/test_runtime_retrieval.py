@@ -65,6 +65,33 @@ def _write_bm25_index(path: Path) -> None:
     )
 
 
+def _write_processed_problems(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "leetcode-994",
+                    "source": "LeetCode",
+                    "sourceId": "994",
+                    "title": "Processed Rotting Oranges",
+                    "problemType": "Graph Traversal",
+                    "statement": "Processed statement for BFS queue traversal.",
+                    "answer": "Processed answer: run multi-source BFS.",
+                    "solutionHints": [
+                        "Processed hint: enqueue all rotten oranges first.",
+                    ],
+                    "concepts": ["BFS", "Queue"],
+                    "metadata": {"difficulty": "medium"},
+                    "constraints": ["1 <= grid.length <= 10"],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 class FakeVectorStore:
     constructor_calls: ClassVar[list[dict[str, object]]] = []
 
@@ -149,6 +176,34 @@ def test_load_runtime_retrieval_settings_defaults_to_local():
     assert settings.neo4j_user == "neo4j"
     assert settings.neo4j_password == "password"
     assert settings.bm25_index_path.name == "bm25_index.json"
+    assert settings.processed_problems_path.name == "problems.json"
+
+
+def test_load_runtime_retrieval_settings_reads_processed_problem_path(tmp_path):
+    from backend.app.retrieval.runtime import load_runtime_retrieval_settings
+
+    processed_path = tmp_path / "custom-problems.json"
+
+    settings = load_runtime_retrieval_settings(
+        {
+            "RETRIEVAL_BACKEND": "stores",
+            "PROCESSED_PROBLEMS_PATH": str(processed_path),
+        }
+    )
+
+    assert settings.backend == "stores"
+    assert settings.processed_problems_path == processed_path
+
+    relative_settings = load_runtime_retrieval_settings(
+        {
+            "RETRIEVAL_BACKEND": "stores",
+            "PROCESSED_PROBLEMS_PATH": "custom/problems.json",
+        }
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    assert relative_settings.backend == "stores"
+    assert relative_settings.processed_problems_path == repo_root / "custom" / "problems.json"
 
 
 def test_load_runtime_retrieval_settings_rejects_unknown_backend():
@@ -242,6 +297,38 @@ def test_build_runtime_retrieval_local_does_not_construct_external_stores(monkey
     assert result.bm25_candidates
 
 
+def test_build_runtime_retrieval_local_ignores_missing_processed_problems(monkeypatch, tmp_path):
+    from backend.app.retrieval import runtime
+
+    class FailingProcessedProblemDocumentLoader:
+        def __init__(self, path: Path) -> None:
+            raise AssertionError(f"local mode must not construct processed loader for {path}")
+
+    missing_processed_path = tmp_path / "missing-problems.json"
+    monkeypatch.setattr(
+        runtime,
+        "ProcessedProblemDocumentLoader",
+        FailingProcessedProblemDocumentLoader,
+    )
+    settings = runtime.load_runtime_retrieval_settings(
+        {"PROCESSED_PROBLEMS_PATH": str(missing_processed_path)}
+    )
+
+    configured = runtime.build_runtime_retrieval(
+        settings=settings,
+        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+    )
+    result = configured.pipeline.run("BFS queue shortest path", top_k=2)
+
+    assert settings.backend == "local"
+    assert settings.processed_problems_path == missing_processed_path
+    assert not missing_processed_path.exists()
+    assert configured.backend == "local"
+    assert configured.candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
+    assert result.vector_candidates
+    assert result.bm25_candidates
+
+
 def test_build_runtime_retrieval_rejects_invalid_settings_backend(monkeypatch):
     from backend.app.retrieval import runtime
 
@@ -266,12 +353,17 @@ def test_build_runtime_retrieval_rejects_invalid_settings_backend(monkeypatch):
 def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatch, tmp_path):
     from backend.app.retrieval import runtime
 
+    class FailingProcessedProblemDocumentLoader:
+        def __init__(self, path: Path) -> None:
+            raise AssertionError(f"explicit documents must not construct loader for {path}")
+
     index_path = tmp_path / "bm25_index.json"
     _write_bm25_index(index_path)
     FakeVectorStore.constructor_calls.clear()
     FakeGraphStore.constructor_calls.clear()
     monkeypatch.setattr(runtime, "QdrantVectorStore", FakeVectorStore)
     monkeypatch.setattr(runtime, "Neo4jGraphStore", FakeGraphStore)
+    monkeypatch.setattr(runtime, "ProcessedProblemDocumentLoader", FailingProcessedProblemDocumentLoader)
     settings = runtime.RuntimeRetrievalSettings(
         backend="stores",
         qdrant_url="http://qdrant.example:6333",
@@ -280,6 +372,7 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
         neo4j_user="custom_user",
         neo4j_password="custom_password",
         bm25_index_path=index_path,
+        processed_problems_path=tmp_path / "missing-problems.json",
     )
 
     configured = runtime.build_runtime_retrieval(
@@ -311,6 +404,34 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
     assert trace["bm25Candidates"][0]["payload"]["answer"] == ""
     assert trace["graphCandidates"][0]["id"] == "leetcode-994"
     assert any("storePath" in path for path in result.graph_paths)
+
+
+def test_build_runtime_retrieval_stores_loads_processed_documents_when_no_override(monkeypatch, tmp_path):
+    from backend.app.retrieval import runtime
+
+    index_path = tmp_path / "bm25_index.json"
+    processed_path = tmp_path / "problems.json"
+    _write_bm25_index(index_path)
+    _write_processed_problems(processed_path)
+    FakeVectorStore.constructor_calls.clear()
+    FakeGraphStore.constructor_calls.clear()
+    monkeypatch.setattr(runtime, "QdrantVectorStore", FakeVectorStore)
+    monkeypatch.setattr(runtime, "Neo4jGraphStore", FakeGraphStore)
+    settings = runtime.RuntimeRetrievalSettings(
+        backend="stores",
+        bm25_index_path=index_path,
+        processed_problems_path=processed_path,
+    )
+
+    configured = runtime.build_runtime_retrieval(
+        settings=settings,
+        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+    )
+    result = configured.pipeline.run("BFS queue graph traversal", top_k=2)
+
+    assert configured.backend == "stores"
+    assert result.graph_candidates[0].title == "Processed Rotting Oranges"
+    assert result.graph_candidates[0].payload["answer"] == "Processed answer: run multi-source BFS."
 
 
 def test_add_runtime_debug_trace_labels_candidate_sources():

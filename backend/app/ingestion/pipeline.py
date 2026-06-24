@@ -151,6 +151,11 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _metadata_difficulty(metadata: dict[str, Any]) -> str | None:
+    value = metadata.get("difficulty")
+    return None if value is None else str(value)
+
+
 def _build_chunks(problems: tuple[RawProblem, ...]) -> tuple[ProblemChunk, ...]:
     chunks: list[ProblemChunk] = []
     for problem in problems:
@@ -181,6 +186,16 @@ def _build_chunks(problems: tuple[RawProblem, ...]) -> tuple[ProblemChunk, ...]:
                         "title": problem.title,
                         "problemType": problem.problem_type,
                     },
+                    answer=problem.answer,
+                    solution_hints=problem.solution_hints,
+                    difficulty=problem.difficulty or _metadata_difficulty(problem.metadata),
+                    constraints=problem.constraints,
+                    examples=problem.examples,
+                    editorial=problem.editorial,
+                    source=problem.source,
+                    source_id=problem.source_id,
+                    title=problem.title,
+                    problem_type=problem.problem_type,
                 )
             )
     return tuple(chunks)

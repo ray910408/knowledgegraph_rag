@@ -4,6 +4,7 @@ import { fetchAnalysis } from "./api";
 import type {
   AnalysisResponse,
   EvidenceBundle,
+  GraphPathTrace,
   EvidencePath,
   InputKind,
   RequiredConcept,
@@ -63,6 +64,46 @@ function formatScore(value: unknown): string {
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function JsonBlock({ value }: { value: unknown }) {
+  return <pre className="json-block">{JSON.stringify(value ?? null, null, 2)}</pre>;
+}
+
+function formatPathItem(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value !== "object") {
+    return String(value);
+  }
+
+  if (!Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const labelParts = ["label", "name", "id", "type"]
+      .map((key) => record[key])
+      .filter((item) => item !== null && item !== undefined && typeof item !== "object")
+      .map((item) => String(item))
+      .filter(Boolean);
+
+    if (labelParts.length > 0) {
+      return labelParts.join(" / ");
+    }
+  }
+
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized || "";
+  } catch {
+    return Array.isArray(value) ? "[array]" : "{object}";
+  }
+}
+
+function formatPathPart(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return "-";
+  }
+  return value.map(formatPathItem).filter(Boolean).join(" -> ") || "-";
 }
 
 export default function App() {
@@ -180,6 +221,7 @@ export default function App() {
         <section className="side-stack">
           <ModelPanel response={response} />
           <EvidencePathPanel paths={response?.evidencePaths ?? []} />
+          <GraphPathsPanel paths={response?.evidenceBundle?.graphPaths ?? []} />
           <ContextPanel contextPreview={response?.contextPreview} />
         </section>
       </section>
@@ -220,6 +262,7 @@ function AnalysisResult({ response }: { response: AnalysisResponse }) {
       <QueryUnderstandingPanel trace={trace} />
       <RetrievalPanel trace={trace} />
       <FusionPanel trace={trace} />
+      <TraceJsonPanel trace={trace} />
       <EvidenceBundlePanel evidence={evidence} />
 
       <OutputBlock title="必要概念">
@@ -318,6 +361,21 @@ function FusionPanel({ trace }: { trace?: RetrievalTrace }) {
   );
 }
 
+function TraceJsonPanel({ trace }: { trace?: RetrievalTrace }) {
+  if (!trace) {
+    return null;
+  }
+
+  return (
+    <OutputBlock title="Retrieval Trace">
+      <details className="trace-json-details">
+        <summary>JSON</summary>
+        <JsonBlock value={trace} />
+      </details>
+    </OutputBlock>
+  );
+}
+
 function EvidenceBundlePanel({ evidence }: { evidence?: EvidenceBundle }) {
   if (!evidence) {
     return null;
@@ -354,9 +412,22 @@ function CandidateList({ title, candidates }: { title: string; candidates: Trace
         <ol>
           {candidates.slice(0, 4).map((candidate) => (
             <li key={`${title}-${candidate.id}`}>
-              <div>
+              <div className="candidate-main">
                 <strong>{candidate.title || candidate.id}</strong>
-                <span>{candidate.id}</span>
+                <span>
+                  {[candidate.id, candidate.candidateSource || candidate.source, candidate.problemType]
+                    .filter(Boolean)
+                    .join(" / ")}
+                </span>
+                {candidate.concepts && candidate.concepts.length > 0 && (
+                  <span>{candidate.concepts.slice(0, 5).join(", ")}</span>
+                )}
+                {candidate.payload && (
+                  <details className="payload-details">
+                    <summary>Payload</summary>
+                    <JsonBlock value={candidate.payload} />
+                  </details>
+                )}
               </div>
               <b>{formatScore(candidate.score)}</b>
             </li>
@@ -490,6 +561,54 @@ function EvidencePathPanel({ paths }: { paths: EvidencePath[] }) {
                 </li>
               ))}
             </ul>
+          </article>
+        ))
+      )}
+    </section>
+  );
+}
+
+function GraphPathsPanel({ paths }: { paths: GraphPathTrace[] }) {
+  return (
+    <section className="panel graph-paths-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Graph Trace</p>
+          <h2>Graph Paths</h2>
+        </div>
+      </div>
+
+      {paths.length === 0 ? (
+        <p className="muted">No graph paths.</p>
+      ) : (
+        paths.map((path, index) => (
+          <article className="graph-path-card" key={`graph-path-${index}`}>
+            <dl>
+              <div>
+                <dt>Nodes</dt>
+                <dd>{formatPathPart(path.nodes)}</dd>
+              </div>
+              <div>
+                <dt>Relations</dt>
+                <dd>{formatPathPart(path.relations)}</dd>
+              </div>
+              <div>
+                <dt>Rationale</dt>
+                <dd>{path.rationale || "-"}</dd>
+              </div>
+              {typeof path.score === "number" && (
+                <div>
+                  <dt>Score</dt>
+                  <dd>{formatScore(path.score)}</dd>
+                </div>
+              )}
+            </dl>
+            {path.storePath && (
+              <details className="payload-details">
+                <summary>Store path</summary>
+                <JsonBlock value={path.storePath} />
+              </details>
+            )}
           </article>
         ))
       )}
