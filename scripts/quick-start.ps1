@@ -23,6 +23,7 @@ $Neo4jUri = "bolt://localhost:7687"
 $Neo4jUser = "neo4j"
 $Neo4jPassword = "password"
 $Bm25IndexPath = Join-Path $ProcessedDataDir "bm25_index.json"
+$ProcessedProblemsPath = Join-Path $ProcessedDataDir "problems.json"
 
 function Write-Step {
     param([string]$Message)
@@ -98,6 +99,7 @@ if ($Check) {
         Write-Step "Qdrant collection: $QdrantCollection"
         Write-Step "Neo4j URI: $Neo4jUri"
         Write-Step "BM25 index: $Bm25IndexPath"
+        Write-Step "Processed problems: $ProcessedProblemsPath"
     }
     Write-Step "Check complete. No services started."
     exit 0
@@ -160,7 +162,8 @@ $backendArgs = @(
     $Neo4jUri,
     $Neo4jUser,
     $Neo4jPassword,
-    $Bm25IndexPath
+    $Bm25IndexPath,
+    $ProcessedProblemsPath
 )
 $backendJob = Start-Job -Name "knowledgegraph-rag-backend" -ScriptBlock {
     param(
@@ -173,7 +176,8 @@ $backendJob = Start-Job -Name "knowledgegraph-rag-backend" -ScriptBlock {
         $Neo4jUriValue,
         $Neo4jUserValue,
         $Neo4jPasswordValue,
-        $Bm25IndexValue
+        $Bm25IndexValue,
+        $ProcessedProblemsValue
     )
     Set-Location $Root
     $env:PYTHONPATH = $Root
@@ -184,6 +188,7 @@ $backendJob = Start-Job -Name "knowledgegraph-rag-backend" -ScriptBlock {
     $env:NEO4J_USER = $Neo4jUserValue
     $env:NEO4J_PASSWORD = $Neo4jPasswordValue
     $env:BM25_INDEX_PATH = $Bm25IndexValue
+    $env:PROCESSED_PROBLEMS_PATH = $ProcessedProblemsValue
     & $Python -m uvicorn backend.app.main:app --host 127.0.0.1 --port $Port
 } -ArgumentList $backendArgs
 

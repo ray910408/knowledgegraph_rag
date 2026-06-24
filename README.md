@@ -77,9 +77,18 @@ RETRIEVAL_BACKEND=stores
 `local` is the default. It uses the local fallback documents and does not
 require Docker.
 
-`stores` creates a Qdrant vector store, a Neo4j graph store, and a BM25 store
-loaded from `data/processed/bm25_index.json`. Use the store-backed quick start
-to seed and run the demo:
+`.env.example` provides these store-backed defaults:
+
+```text
+BM25_INDEX_PATH=data/processed/bm25_index.json
+PROCESSED_PROBLEMS_PATH=data/processed/problems.json
+```
+
+`stores` creates a Qdrant vector store, a Neo4j graph store, and a BM25 store.
+It loads runtime documents from
+`PROCESSED_PROBLEMS_PATH=data/processed/problems.json` and loads the BM25 index
+from `BM25_INDEX_PATH=data/processed/bm25_index.json`. Use the store-backed
+quick start to seed and run the demo:
 
 ```powershell
 .\scripts\quick-start.ps1 -Stores
@@ -93,6 +102,10 @@ curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
   -d "{\"input\":\"unweighted graph shortest path BFS\"}"
 ```
 
+In `stores` mode, `contextPreview` can include answer, solutionHints,
+difficulty, constraints, and graph path rationale from the enriched runtime
+evidence. It is omitted from non-debug responses.
+
 The debug response includes:
 
 ```text
@@ -102,9 +115,9 @@ retrievalTrace.candidateSources.graph = neo4j
 retrievalTrace.candidateSources.bm25 = bm25_index
 ```
 
-This phase keeps the existing runtime documents as the graph candidate set. It
-does not load `data/processed/problems.json` or require store hits to include
-full answers or solution hints.
+Store-backed retrieval uses the processed runtime documents and enriched store
+payloads, so vector/BM25 hits can carry full evidence such as answers,
+solutionHints, difficulty, and constraints.
 
 ## 線上查詢流程
 
