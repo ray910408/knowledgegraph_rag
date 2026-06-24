@@ -297,6 +297,38 @@ def test_build_runtime_retrieval_local_does_not_construct_external_stores(monkey
     assert result.bm25_candidates
 
 
+def test_build_runtime_retrieval_local_ignores_missing_processed_problems(monkeypatch, tmp_path):
+    from backend.app.retrieval import runtime
+
+    class FailingProcessedProblemDocumentLoader:
+        def __init__(self, path: Path) -> None:
+            raise AssertionError(f"local mode must not construct processed loader for {path}")
+
+    missing_processed_path = tmp_path / "missing-problems.json"
+    monkeypatch.setattr(
+        runtime,
+        "ProcessedProblemDocumentLoader",
+        FailingProcessedProblemDocumentLoader,
+    )
+    settings = runtime.load_runtime_retrieval_settings(
+        {"PROCESSED_PROBLEMS_PATH": str(missing_processed_path)}
+    )
+
+    configured = runtime.build_runtime_retrieval(
+        settings=settings,
+        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+    )
+    result = configured.pipeline.run("BFS queue shortest path", top_k=2)
+
+    assert settings.backend == "local"
+    assert settings.processed_problems_path == missing_processed_path
+    assert not missing_processed_path.exists()
+    assert configured.backend == "local"
+    assert configured.candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
+    assert result.vector_candidates
+    assert result.bm25_candidates
+
+
 def test_build_runtime_retrieval_rejects_invalid_settings_backend(monkeypatch):
     from backend.app.retrieval import runtime
 
