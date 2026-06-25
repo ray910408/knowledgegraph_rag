@@ -24,7 +24,9 @@ Request body：
 
 ```json
 {
-  "input": "unweighted graph shortest path BFS"
+  "input": "unweighted graph shortest path BFS",
+  "mode": "hybrid",
+  "topK": 3
 }
 ```
 
@@ -36,6 +38,8 @@ problemText
 statement
 code
 problemId
+mode
+topK
 ```
 
 行為：
@@ -43,6 +47,10 @@ problemId
 - 空輸入回 `400`。
 - 若指定 `problemId` 且不存在，回 `404`。
 - 若沒有指定 `problemId`，一般文字會走 query search。
+- `mode` 可為 `hybrid`、`vector`、`graph`，預設 `hybrid`。
+- `topK` 控制最後候選數，預設 `5`。
+- `similarProblems` 來自所選 mode 的最後 reranked candidates；命中題目本身會放在 `matchedProblem`，不會重複出現在 `similarProblems`。
+- 當所選 mode 沒有相似候選時，`similarProblems` 會是空陣列，不會回退到無關的 demo 相似題。
 
 ### Analysis Response
 
@@ -166,6 +174,10 @@ also include a `rationale` used by debug `contextPreview`.
   "commonMistakes": []
 }
 ```
+
+`evidenceBundle.similarProblems` follows the same selected-mode candidate set
+as top-level `similarProblems`. `ContextBuilder` includes the `相似題` section
+only when this array is non-empty.
 
 ### Example
 

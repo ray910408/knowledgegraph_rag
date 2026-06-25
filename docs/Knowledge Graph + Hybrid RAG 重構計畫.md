@@ -14,6 +14,11 @@
 - Qdrant and BM25 candidate payloads now carry enriched evidence fields such as
   answer, solutionHints, difficulty, constraints, examples, editorial, source,
   sourceId, title, problemType, and concepts.
+- `/api/analysis` now honors `mode` and `topK`, keeps exact problem matches in
+  `matchedProblem`, and derives `similarProblems` from the selected-mode final
+  candidates only.
+- Empty similar-problem evidence no longer renders stale UI or context-preview
+  headings.
 - Query Understanding remains rule-based in this round, so retrieval refactoring
   is not mixed with LLM behavior changes.
 
