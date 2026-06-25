@@ -549,9 +549,27 @@ function normalizeResponse(payload: unknown, request: AnalysisRequest): Analysis
   };
 }
 
-export async function fetchAnalysis(request: AnalysisRequest): Promise<AnalysisResponse> {
+async function getApiErrorMessage(response: Response): Promise<string> {
   try {
-    const response = await fetch(`/api/analysis${request.debug ? "?debug=true" : ""}`, {
+    const payload = asRecord(await response.json());
+    const detail = payload?.detail;
+    if (typeof detail === "string" && detail.trim().length > 0) {
+      return detail;
+    }
+    if (detail !== undefined) {
+      return JSON.stringify(detail);
+    }
+  } catch {
+    // Fall through to the status-based message.
+  }
+  return `analysis API returned ${response.status}`;
+}
+
+export async function fetchAnalysis(request: AnalysisRequest): Promise<AnalysisResponse> {
+  let response: Response;
+
+  try {
+    response = await fetch(`/api/analysis${request.debug ? "?debug=true" : ""}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -562,11 +580,19 @@ export async function fetchAnalysis(request: AnalysisRequest): Promise<AnalysisR
         topK: request.topK
       })
     });
+  } catch {
+    return mockFallback(request);
+  }
 
-    if (!response.ok) {
-      throw new Error(`analysis API returned ${response.status}`);
-    }
+  if (response.status >= 400 && response.status < 500) {
+    throw new Error(await getApiErrorMessage(response));
+  }
 
+  if (!response.ok) {
+    return mockFallback(request);
+  }
+
+  try {
     return normalizeResponse(await response.json(), request);
   } catch {
     return mockFallback(request);

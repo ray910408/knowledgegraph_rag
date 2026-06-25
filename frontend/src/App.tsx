@@ -17,6 +17,7 @@ import type {
 
 const sampleInput =
   "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。需要說明該使用哪些演算法與資料結構。";
+const emptyInputError = "請輸入題目、題號、關鍵字或程式碼。";
 
 const modes: Array<{ id: RetrievalMode; label: string }> = [
   { id: "hybrid", label: "Hybrid" },
@@ -127,6 +128,14 @@ export default function App() {
   const latestRequestId = useRef(0);
 
   async function handleAnalyze() {
+    if (inputText.trim().length === 0) {
+      latestRequestId.current += 1;
+      setIsLoading(false);
+      setResponse(null);
+      setError(emptyInputError);
+      return;
+    }
+
     const requestId = latestRequestId.current + 1;
     latestRequestId.current = requestId;
     setIsLoading(true);
@@ -142,6 +151,7 @@ export default function App() {
       if (requestId !== latestRequestId.current) {
         return;
       }
+      setResponse(null);
       setError(caughtError instanceof Error ? caughtError.message : "分析失敗，請稍後再試。");
     } finally {
       if (requestId === latestRequestId.current) {
@@ -176,6 +186,8 @@ export default function App() {
           </div>
 
           <textarea
+            aria-describedby={error ? "analysis-error" : undefined}
+            aria-invalid={Boolean(error)}
             aria-label="題目、題號、關鍵字或程式碼"
             value={inputText}
             onChange={(event) => setInputText(event.target.value)}
@@ -221,7 +233,11 @@ export default function App() {
             {isLoading ? "分析中..." : "執行查詢"}
           </button>
 
-          {error && <p className="error-text">{error}</p>}
+          {error && (
+            <p className="error-text" id="analysis-error">
+              {error}
+            </p>
+          )}
         </aside>
 
         <section className="panel result-panel" aria-live="polite">
