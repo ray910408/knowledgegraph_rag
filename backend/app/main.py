@@ -98,6 +98,13 @@ class AnalysisRequest(BaseModel):
     )
     statement: str | None = None
     code: str | None = None
+    mode: RecommendationMode = "hybrid"
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices("topK", "top_k"),
+    )
 
 
 class SimilarProblemResponse(BaseModel):
@@ -352,7 +359,11 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     runtime_retrieval = _runtime_retrieval()
-    pipeline_result = runtime_retrieval.pipeline.run(retrieval_query, top_k=5)
+    pipeline_result = runtime_retrieval.pipeline.run(
+        retrieval_query,
+        mode=request.mode,
+        top_k=request.top_k,
+    )
     retrieval_trace = pipeline_result.trace.to_mapping()
     if debug:
         retrieval_trace = add_runtime_debug_trace(

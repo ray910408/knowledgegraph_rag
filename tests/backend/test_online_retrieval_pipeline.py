@@ -556,6 +556,146 @@ def test_online_pipeline_accepts_store_injection_and_preserves_debug_outputs():
     assert "查詢理解" in context
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_ids", "expected_sources"),
+    [
+        (
+            "hybrid",
+            {"vector-only", "graph-only", "bm25-only"},
+            {
+                "vector-only": ["vector"],
+                "graph-only": ["graph"],
+                "bm25-only": ["bm25"],
+            },
+        ),
+        ("vector", {"vector-only"}, {"vector-only": ["vector"]}),
+        ("graph", {"graph-only"}, {"graph-only": ["graph"]}),
+    ],
+)
+def test_online_pipeline_mode_controls_fusion_sources_and_final_results(
+    mode,
+    expected_ids,
+    expected_sources,
+):
+    documents = (
+        RetrievalDocument(
+            id="vector-only",
+            source="Test",
+            source_id="vector",
+            title="Vector candidate",
+            text="Embedding-only candidate.",
+            answer="Vector answer.",
+            concepts=("Embeddings",),
+            problem_type="Similarity",
+        ),
+        RetrievalDocument(
+            id="graph-only",
+            source="Test",
+            source_id="graph",
+            title="Graph candidate",
+            text="BFS graph candidate.",
+            answer="Graph answer.",
+            concepts=("BFS",),
+            problem_type="Graph Traversal",
+        ),
+        RetrievalDocument(
+            id="bm25-only",
+            source="Test",
+            source_id="bm25",
+            title="BM25 candidate",
+            text="Lexical-only candidate.",
+            answer="BM25 answer.",
+            concepts=("Lexical Search",),
+            problem_type="Search",
+        ),
+    )
+    vector_store = _FakeVectorStore(
+        (
+            SearchCandidate(
+                id="vector-only:statement:0",
+                score=0.9,
+                payload=_store_payload(documents[0]),
+            ),
+        )
+    )
+    bm25_store = _FakeBM25Store(
+        (
+            SearchCandidate(
+                id="bm25-only:statement:0",
+                score=0.8,
+                payload=_store_payload(documents[2]),
+            ),
+        )
+    )
+
+    result = OnlineQueryPipeline(
+        documents=documents,
+        vector_store=vector_store,
+        bm25_store=bm25_store,
+    ).run("BFS", mode=mode, top_k=3)
+    trace = result.trace.to_mapping()
+
+    assert {candidate.id for candidate in result.fused_candidates} == expected_ids
+    assert {candidate.id for candidate in result.reranked_candidates} == expected_ids
+    assert {
+        candidate.id: candidate.payload["sources"]
+        for candidate in result.fused_candidates
+    } == expected_sources
+    assert trace["vectorCandidates"]
+    assert trace["graphCandidates"]
+    assert trace["bm25Candidates"]
+    assert {candidate["id"] for candidate in trace["fusionScores"]} == expected_ids
+    assert {candidate["id"] for candidate in trace["rerankerScores"]} == expected_ids
+    assert result.graph_paths
+
+
+def test_online_pipeline_top_k_limits_mode_specific_final_results():
+    result = OnlineQueryPipeline(documents=_documents()).run(
+        "BFS shortest path with queue",
+        mode="vector",
+        top_k=1,
+    )
+
+    assert len(result.fused_candidates) <= 2
+    assert len(result.reranked_candidates) == 1
+    assert len(EvidenceBuilder().build(result.reranked_candidates, ()).similar_problems) == 1
+
+
+def test_online_pipeline_mode_keeps_exact_match_and_graph_paths_independent():
+    similar_document = RetrievalDocument(
+        id="leetcode-1091",
+        source="LeetCode",
+        source_id="1091",
+        title="Shortest Path in Binary Matrix",
+        text="Use BFS to find a shortest path in an unweighted binary matrix.",
+        answer="Run BFS over eight directions.",
+        concepts=("BFS", "Queue", "Visited Array"),
+        problem_type="Graph Traversal",
+    )
+    result = OnlineQueryPipeline(
+        documents=(_uva_document(), similar_document),
+        vector_store=_FakeVectorStore(
+            (
+                SearchCandidate(
+                    id="leetcode-1091:statement:0",
+                    score=0.9,
+                    payload=_store_payload(similar_document),
+                ),
+            )
+        ),
+        bm25_store=_FakeBM25Store(()),
+    ).run(
+        "UVA-10653 - Bombs! NO they are Mines!!",
+        mode="vector",
+        top_k=1,
+    )
+
+    assert result.matched_problem is not None
+    assert result.matched_problem.problem_id == "uva-10653"
+    assert result.graph_paths
+    assert [candidate.id for candidate in result.reranked_candidates] == ["leetcode-1091"]
+
+
 def test_store_chunk_candidates_are_aggregated_by_problem_and_keep_raw_chunks():
     chunk_one = RetrievalCandidate(
         id="uva-10653",

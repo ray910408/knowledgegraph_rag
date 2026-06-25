@@ -13,6 +13,7 @@ from ..stores import BM25Store, GraphStore, SearchCandidate, VectorStore
 
 
 JsonMap = dict[str, Any]
+RetrievalMode = Literal["hybrid", "vector", "graph"]
 _MAX_STORE_FETCH_ATTEMPTS = 4
 _MAX_STORE_FETCH_WINDOW = 100
 
@@ -747,7 +748,13 @@ class OnlineQueryPipeline:
         self._bm25_store = bm25_store
         self._graph_store = graph_store
 
-    def run(self, query: str, *, top_k: int = 5) -> OnlineQueryResult:
+    def run(
+        self,
+        query: str,
+        *,
+        mode: RetrievalMode = "hybrid",
+        top_k: int = 5,
+    ) -> OnlineQueryResult:
         understanding = QueryUnderstandingService(self._documents).understand(query)
         matched_problem = ExactProblemMatcher(self._documents).match(understanding)
         if (
@@ -777,10 +784,13 @@ class OnlineQueryPipeline:
             top_k=max(top_k * 2, top_k),
             matched_problem=matched_problem,
         )
+        fusion_inputs = {
+            "vector_candidates": vector_candidates if mode in {"hybrid", "vector"} else (),
+            "graph_candidates": graph_result.candidates if mode in {"hybrid", "graph"} else (),
+            "bm25_candidates": bm25_candidates if mode == "hybrid" else (),
+        }
         fused = HybridFusionService().fuse(
-            vector_candidates=vector_candidates,
-            graph_candidates=graph_result.candidates,
-            bm25_candidates=bm25_candidates,
+            **fusion_inputs,
             top_k=max(top_k * 2, top_k),
         )
         reranked = Reranker().rerank(understanding.normalized_query, fused, top_k=top_k)

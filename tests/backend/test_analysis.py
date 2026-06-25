@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.analysis import find_graph_traversal_examples, load_programming_dataset
 from backend.app.contracts import RetrievalTrace
-from backend.app.main import _analysis_paths_from_graph_trace, app
+from backend.app.main import AnalysisRequest, _analysis_paths_from_graph_trace, app
 from backend.app.providers import DeterministicMockEmbeddingProvider
 from backend.app.retrieval.pipeline import (
     ExactProblemMatch,
@@ -480,10 +480,18 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
         def __init__(self, result: OnlineQueryResult) -> None:
             self.result = result
             self.last_query: str | None = None
+            self.last_mode: str | None = None
             self.last_top_k: int | None = None
 
-        def run(self, query: str, *, top_k: int = 5) -> OnlineQueryResult:
+        def run(
+            self,
+            query: str,
+            *,
+            mode: str = "hybrid",
+            top_k: int = 5,
+        ) -> OnlineQueryResult:
             self.last_query = query
+            self.last_mode = mode
             self.last_top_k = top_k
             return self.result
 
@@ -500,12 +508,20 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
     )
     client = TestClient(app)
 
-    response = client.post("/api/analysis", json={"problemId": "uva-10653"})
+    response = client.post(
+        "/api/analysis",
+        json={
+            "problemId": "uva-10653",
+            "mode": "graph",
+            "topK": 3,
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
     assert pipeline.last_query == "uva-10653"
-    assert pipeline.last_top_k == 5
+    assert pipeline.last_mode == "graph"
+    assert pipeline.last_top_k == 3
     assert payload["matchedProblem"]["id"] == "uva-10653"
     assert payload["retrievalTrace"]["matchedProblem"]["id"] == "uva-10653"
     assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
@@ -534,6 +550,38 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
             ],
         }
     ]
+
+
+@pytest.mark.parametrize("field_name", ["topK", "top_k"])
+def test_analysis_request_accepts_top_k_aliases(field_name):
+    request = AnalysisRequest.model_validate(
+        {
+            "input": "BFS shortest path",
+            "mode": "vector",
+            field_name: 8,
+        }
+    )
+
+    assert request.mode == "vector"
+    assert request.top_k == 8
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_location"),
+    [
+        ({"input": "BFS", "mode": "invalid"}, ("mode",)),
+        ({"input": "BFS", "topK": 0}, ("topK",)),
+        ({"input": "BFS", "top_k": 11}, ("top_k",)),
+    ],
+)
+def test_analysis_request_rejects_invalid_mode_and_top_k(payload, error_location):
+    with pytest.raises(ValueError) as exc_info:
+        AnalysisRequest.model_validate(payload)
+
+    assert error_location in {
+        tuple(error["loc"])
+        for error in exc_info.value.errors()
+    }
 
 
 def test_analysis_exact_problem_query_exposes_consistent_matched_problem():
