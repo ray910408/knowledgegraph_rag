@@ -339,14 +339,26 @@ class BM25SearchService:
         candidates: list[RetrievalCandidate] = []
         for document in self._documents:
             terms = _tokens(
-                f"{document.title} {document.text} {document.answer} {' '.join(document.concepts)}"
+                " ".join(
+                    (
+                        document.id,
+                        document.source,
+                        document.source_id,
+                        document.title,
+                        " ".join(_problem_aliases(document)),
+                        document.text,
+                        document.answer,
+                        " ".join(document.concepts),
+                    )
+                )
             )
             if not query_terms:
                 score = 0.0
             else:
                 score = sum(1 for term in terms if term in query_terms) / max(len(terms), 1)
                 score += len(query_terms & set(terms)) / len(query_terms)
-            candidates.append(_candidate_from_document(document, source="bm25", score=score))
+            if score > 0:
+                candidates.append(_candidate_from_document(document, source="bm25", score=score))
         return tuple(sorted(candidates, key=lambda item: (-item.score, item.id))[:top_k])
 
 
@@ -548,6 +560,8 @@ class HybridFusionService:
         for source, candidates in groups.items():
             best_by_id: dict[str, RetrievalCandidate] = {}
             for candidate in candidates:
+                if candidate.score <= 0:
+                    continue
                 current = best_by_id.get(candidate.id)
                 if current is None or candidate.score > current.score:
                     best_by_id[candidate.id] = candidate

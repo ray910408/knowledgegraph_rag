@@ -226,6 +226,34 @@ class _FakeBM25Store:
         return self._candidates[:top_k]
 
 
+def test_store_backed_bm25_filters_zero_score_candidates():
+    uva = _uva_document()
+    leetcode = _documents()[0]
+    bm25_store = _FakeBM25Store(
+        (
+            SearchCandidate(
+                id="leetcode-994:statement:0",
+                score=0.0,
+                payload=_store_payload(leetcode),
+            ),
+            SearchCandidate(
+                id="uva-10653:statement:0",
+                score=0.7,
+                payload=_store_payload(uva),
+            ),
+        )
+    )
+    understanding = QueryUnderstandingService((leetcode, uva)).understand("10653")
+
+    candidates = BM25SearchService((leetcode, uva), bm25_store=bm25_store).search(
+        understanding,
+        top_k=3,
+    )
+
+    assert [candidate.id for candidate in candidates] == ["uva-10653"]
+    assert all(candidate.score > 0 for candidate in candidates)
+
+
 def _duplicate_chunk_candidates() -> tuple[SearchCandidate, ...]:
     first, second = _documents()
     return (
@@ -761,6 +789,37 @@ def test_vector_graph_and_bm25_search_return_candidates():
     assert graph_result.paths[0]["pathSource"] == "inferred"
 
 
+@pytest.mark.parametrize(
+    "query",
+    (
+        "10653",
+        "uva-10653",
+        "uva 10653",
+        "Bombs! NO they are Mines!!",
+        "UVa Bombs! NO they are Mines!!",
+    ),
+)
+def test_local_bm25_scores_exact_problem_aliases(query: str):
+    documents = (_documents()[0], _uva_document())
+    understanding = QueryUnderstandingService(documents).understand(query)
+
+    candidates = BM25SearchService(documents).search(understanding, top_k=3)
+
+    assert [candidate.id for candidate in candidates] == ["uva-10653"]
+    assert candidates[0].score > 0
+    assert candidates[0].source == "bm25"
+
+
+def test_local_bm25_filters_zero_score_candidates():
+    documents = (_documents()[0], _uva_document())
+    understanding = QueryUnderstandingService(documents).understand("10653")
+
+    candidates = BM25SearchService(documents).search(understanding, top_k=3)
+
+    assert [candidate.id for candidate in candidates] == ["uva-10653"]
+    assert all(candidate.score > 0 for candidate in candidates)
+
+
 def test_hybrid_fusion_dedupes_and_normalizes_scores_then_reranks():
     candidates = HybridFusionService().fuse(
         vector_candidates=(
@@ -843,6 +902,54 @@ def test_hybrid_fusion_counts_each_source_once_per_problem():
     assert by_id["leetcode-994"].score == 0.35
     assert by_id["leetcode-994"].payload["sources"] == ["vector"]
     assert by_id["leetcode-300"].score == round(0.35 * (0.6 / 0.9), 6)
+
+
+def test_hybrid_fusion_ignores_non_positive_candidates_from_every_source():
+    candidates = HybridFusionService().fuse(
+        vector_candidates=(
+            RetrievalCandidate(
+                id="leetcode-994",
+                title="Rotting Oranges",
+                source="vector",
+                score=0.8,
+                text="BFS queue",
+                concepts=("BFS", "Queue"),
+            ),
+            RetrievalCandidate(
+                id="uva-10653",
+                title="Bombs! NO they are Mines!!",
+                source="vector",
+                score=0.0,
+                text="untrusted adapter row",
+                concepts=("BFS",),
+            ),
+        ),
+        graph_candidates=(
+            RetrievalCandidate(
+                id="leetcode-994",
+                title="Rotting Oranges",
+                source="graph",
+                score=-0.1,
+                text="bad graph row",
+                concepts=("BFS",),
+            ),
+        ),
+        bm25_candidates=(
+            RetrievalCandidate(
+                id="leetcode-994",
+                title="Rotting Oranges",
+                source="bm25",
+                score=0.0,
+                text="bad BM25 row",
+                concepts=("BFS",),
+            ),
+        ),
+        top_k=3,
+    )
+
+    assert [candidate.id for candidate in candidates] == ["leetcode-994"]
+    assert candidates[0].score == 0.35
+    assert candidates[0].payload["sources"] == ["vector"]
 
 
 def test_evidence_and_context_builders_create_stable_llm_context():
