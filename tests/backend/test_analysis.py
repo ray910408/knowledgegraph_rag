@@ -380,6 +380,110 @@ def test_analysis_paths_use_zero_score_for_malformed_or_non_finite_values(score)
     assert converted[0].edges[0].weight == 0.0
 
 
+def test_analysis_graph_mode_empty_reranked_candidates_keeps_top_level_similar_empty():
+    matched_candidate = RetrievalCandidate(
+        id="uva-10653",
+        title="Bombs! NO they are Mines!!",
+        source="UVa",
+        score=1.0,
+        text="Find the shortest safe path on a grid with bomb cells.",
+        concepts=("BFS", "Queue", "Visited Array"),
+        problem_type="Graph Traversal",
+        payload={
+            "documentSource": "UVa",
+            "sourceId": "10653",
+            "answer": "Run BFS from the start cell while skipping bomb cells.",
+            "solutionHints": ("Mark bomb cells before BFS.",),
+            "difficulty": "Medium",
+            "constraints": (),
+        },
+    )
+    matched_problem = ExactProblemMatch(
+        problem_id=matched_candidate.id,
+        title=matched_candidate.title,
+        source=matched_candidate.source,
+        source_id="10653",
+        match_kind="exact_title",
+        confidence=1.0,
+        candidate=matched_candidate,
+    )
+    expected_result = OnlineQueryResult(
+        query_understanding=QueryUnderstanding(
+            original_query="UVA-10653 - Bombs! NO they are Mines!!",
+            normalized_query="uva-10653 bombs no they are mines",
+            input_kind="problem",
+            intent="problem_search",
+            keywords=("uva", "10653", "bombs", "mines"),
+        ),
+        linked_entities=(),
+        matched_problem=matched_problem,
+        vector_candidates=(),
+        graph_candidates=(),
+        bm25_candidates=(),
+        fused_candidates=(),
+        reranked_candidates=(),
+        graph_paths=(
+            {
+                "nodes": ["input", "uva-10653", "concept:bfs"],
+                "relations": ["EXACT_MATCH", "REQUIRES"],
+                "score": 1.0,
+                "pathSource": "neo4j",
+            },
+        ),
+        trace=RetrievalTrace(
+            query_understanding={
+                "originalQuery": "UVA-10653 - Bombs! NO they are Mines!!",
+                "normalizedQuery": "uva-10653 bombs no they are mines",
+                "inputKind": "problem",
+                "intent": "problem_search",
+                "keywords": ["uva", "10653", "bombs", "mines"],
+            },
+            matched_problem=matched_problem.to_mapping(),
+        ),
+    )
+
+    class EmptyGraphPipeline:
+        def run(
+            self,
+            query: str,
+            *,
+            mode: str = "hybrid",
+            top_k: int = 5,
+        ) -> OnlineQueryResult:
+            assert query == "UVA-10653 - Bombs! NO they are Mines!!"
+            assert mode == "graph"
+            assert top_k == 3
+            return expected_result
+
+    app.state.runtime_retrieval = RuntimeRetrieval(
+        backend="stores",
+        pipeline=EmptyGraphPipeline(),  # type: ignore[arg-type]
+        candidate_sources={},
+        provider_sources={},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis",
+        json={
+            "input": "UVA-10653 - Bombs! NO they are Mines!!",
+            "mode": "graph",
+            "topK": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["similarProblems"] == []
+    assert payload["evidenceBundle"]["similarProblems"] == []
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
+    assert payload["evidencePaths"][0]["nodes"][1]["id"] == "uva-10653"
+    assert payload["requiredConcepts"]
+    assert payload["solvingHints"]
+    assert payload["commonMistakes"]
+
+
 def test_analysis_problem_id_only_preserves_exact_id_retrieval():
     matched_candidate = RetrievalCandidate(
         id="uva-10653",
@@ -526,6 +630,9 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
     assert payload["retrievalTrace"]["matchedProblem"]["id"] == "uva-10653"
     assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
     assert all(problem["id"] != "uva-10653" for problem in payload["evidenceBundle"]["similarProblems"])
+    assert [problem["id"] for problem in payload["similarProblems"]] == ["1091"]
+    assert payload["similarProblems"][0]["source"] == "LeetCode"
+    assert payload["similarProblems"][0]["title"] == "Shortest Path in Binary Matrix"
     assert payload["evidencePaths"] == [
         {
             "title": "Graph path 1 (neo4j)",
@@ -611,6 +718,31 @@ def test_analysis_exact_problem_query_exposes_consistent_matched_problem():
     ]
     assert top_level_similar_problem_ids == ["1091", "994"]
     assert {"uva-10653", "10653"}.isdisjoint(top_level_similar_problem_ids)
+
+
+def test_analysis_exact_source_id_vector_query_preserves_retrieval_similar_problems():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis",
+        json={"input": "10653", "mode": "vector"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert payload["matchedProblem"]["sourceId"] == "10653"
+    top_level_similar_problems = payload["similarProblems"]
+    assert {
+        (problem["source"], problem["id"], problem["title"])
+        for problem in top_level_similar_problems
+    } == {
+        ("LeetCode", "1091", "Shortest Path in Binary Matrix"),
+        ("LeetCode", "994", "Rotting Oranges"),
+    }
+    assert {"uva-10653", "10653"}.isdisjoint(
+        {problem["id"] for problem in top_level_similar_problems}
+    )
 
 
 def test_analysis_unknown_explicit_problem_id_returns_404():

@@ -408,18 +408,10 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
             )
             for concept in result.required_concepts
         ],
-        similarProblems=[
-            SimilarProblemResponse(
-                source=problem.source,
-                id=problem.id,
-                title=problem.title,
-                reason=problem.reason,
-                sharedConcepts=list(problem.shared_concepts),
-                answerHint=problem.answer_hint,
-            )
-            for problem in result.similar_problems
-            if problem.id not in matched_problem_ids
-        ],
+        similarProblems=_similar_problem_responses_from_candidates(
+            pipeline_result.reranked_candidates,
+            matched_problem_ids=matched_problem_ids,
+        ),
         similarityReason=result.similarity_reason,
         solvingHints=list(result.solving_hints),
         commonMistakes=list(result.common_mistakes),
@@ -478,6 +470,39 @@ def _provider_descriptor_response(
     if descriptor is None:
         return None
     return ProviderDescriptorResponse(**descriptor)
+
+
+def _similar_problem_responses_from_candidates(
+    candidates: Sequence[object],
+    *,
+    matched_problem_ids: set[str],
+) -> list[SimilarProblemResponse]:
+    responses: list[SimilarProblemResponse] = []
+    for candidate in candidates:
+        candidate_id = str(getattr(candidate, "id", ""))
+        payload = getattr(candidate, "payload", {})
+        payload_map = payload if isinstance(payload, Mapping) else {}
+        source_id = str(payload_map.get("sourceId") or candidate_id)
+        if candidate_id in matched_problem_ids or source_id in matched_problem_ids:
+            continue
+        concepts = [str(concept) for concept in getattr(candidate, "concepts", ())]
+        responses.append(
+            SimilarProblemResponse(
+                source=str(payload_map.get("documentSource") or getattr(candidate, "source", "")),
+                id=source_id,
+                title=str(getattr(candidate, "title", "")),
+                reason=_similar_problem_reason(concepts),
+                sharedConcepts=concepts,
+                answerHint=str(payload_map.get("answer") or ""),
+            )
+        )
+    return responses
+
+
+def _similar_problem_reason(concepts: Sequence[str]) -> str:
+    if concepts:
+        return f"Retrieved by selected mode; shared concepts: {', '.join(concepts)}."
+    return "Retrieved by selected mode as a final reranked candidate."
 
 
 def _analysis_problem_text(problem_id: str | None) -> str | None:
