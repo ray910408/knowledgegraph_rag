@@ -6,6 +6,11 @@ from typing import ClassVar, Sequence
 
 import pytest
 
+from backend.app.contracts import ProblemChunk
+from backend.app.ingestion.pipeline import (
+    _classify_concept,
+    _write_bm25_index as write_ingestion_bm25_index,
+)
 from backend.app.providers import DeterministicMockEmbeddingProvider
 from backend.app.retrieval.pipeline import RetrievalDocument
 from backend.app.stores import BM25Document, SearchCandidate
@@ -227,6 +232,68 @@ def test_json_bm25_store_loads_processed_index(tmp_path):
     assert results[0].payload["metadata"]["title"] == "Rotting Oranges"
 
 
+def test_json_bm25_store_matches_problem_alias_text(tmp_path):
+    from backend.app.retrieval.runtime import JsonBM25Store
+
+    index_path = tmp_path / "bm25_index.json"
+    chunk = ProblemChunk(
+        id="uva-10653:statement:0",
+        problem_id="uva-10653",
+        kind="statement",
+        text="Find the shortest safe path on a grid with bomb cells.",
+        index=0,
+        concepts=("BFS", "Queue", "Visited Array"),
+        metadata={
+            "source": "UVa",
+            "sourceId": "10653",
+            "title": "Bombs! NO they are Mines!!",
+            "problemType": "Graph Traversal",
+        },
+        source="UVa",
+        source_id="10653",
+        title="Bombs! NO they are Mines!!",
+        problem_type="Graph Traversal",
+    )
+    write_ingestion_bm25_index(index_path, (chunk,))
+
+    artifact = json.loads(index_path.read_text(encoding="utf-8"))
+    assert artifact["documents"][0]["text"] == (
+        "uva-10653 UVa 10653 UVa-10653 UVa 10653 "
+        "Bombs! NO they are Mines!! Graph Traversal "
+        "BFS Queue Visited Array "
+        "Find the shortest safe path on a grid with bomb cells."
+    )
+
+    store = JsonBM25Store.from_path(index_path)
+    results = store.search("UVA-10653 - Bombs! NO they are Mines!!", top_k=1)
+
+    assert results[0].id == chunk.id
+    assert results[0].score > 0
+
+
+@pytest.mark.parametrize(
+    ("concept", "expected"),
+    (
+        ("BFS", "algorithm"),
+        ("DFS", "algorithm"),
+        ("Dijkstra", "algorithm"),
+        ("Binary Search", "algorithm"),
+        ("Dynamic Programming", "algorithm"),
+        ("Queue", "data_structure"),
+        ("Stack", "data_structure"),
+        ("Heap", "data_structure"),
+        ("Array", "data_structure"),
+        ("Hash Map", "data_structure"),
+        ("Visited Array", "technique"),
+        ("Visited Set", "technique"),
+        ("State Tracking", "technique"),
+        ("Shortest Path", "concept"),
+    ),
+)
+def test_ingestion_classifies_concepts_for_graph_metadata(concept, expected):
+    assert _classify_concept(concept) == expected
+
+
 def test_json_bm25_store_rejects_non_object_index(tmp_path):
     from backend.app.retrieval.runtime import JsonBM25Store, RuntimeRetrievalError
 
@@ -284,15 +351,27 @@ def test_build_runtime_retrieval_local_does_not_construct_external_stores(monkey
     monkeypatch.setattr(runtime, "Neo4jGraphStore", fail_neo4j)
     settings = runtime.RuntimeRetrievalSettings(backend="local")
 
+    embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
     configured = runtime.build_runtime_retrieval(
         settings=settings,
         documents=_documents(),
-        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+        embedding_provider=embedding_provider,
     )
     result = configured.pipeline.run("BFS queue shortest path", top_k=2)
 
     assert configured.backend == "local"
     assert configured.candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
+    assert configured.pipeline._embedding_provider is embedding_provider
+    assert configured.provider_sources == {
+        "embedding": {
+            "provider": "mock",
+            "model": "BAAI/bge-m3",
+        },
+        "reranker": {
+            "provider": "mock",
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    }
     assert result.vector_candidates
     assert result.bm25_candidates
 
@@ -314,9 +393,10 @@ def test_build_runtime_retrieval_local_ignores_missing_processed_problems(monkey
         {"PROCESSED_PROBLEMS_PATH": str(missing_processed_path)}
     )
 
+    embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
     configured = runtime.build_runtime_retrieval(
         settings=settings,
-        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+        embedding_provider=embedding_provider,
     )
     result = configured.pipeline.run("BFS queue shortest path", top_k=2)
 
@@ -325,6 +405,7 @@ def test_build_runtime_retrieval_local_ignores_missing_processed_problems(monkey
     assert not missing_processed_path.exists()
     assert configured.backend == "local"
     assert configured.candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
+    assert configured.pipeline._embedding_provider is embedding_provider
     assert result.vector_candidates
     assert result.bm25_candidates
 
@@ -375,10 +456,11 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
         processed_problems_path=tmp_path / "missing-problems.json",
     )
 
+    embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
     configured = runtime.build_runtime_retrieval(
         settings=settings,
         documents=_documents(),
-        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+        embedding_provider=embedding_provider,
     )
     result = configured.pipeline.run("BFS queue graph traversal", top_k=2)
     trace = result.trace.to_mapping()
@@ -388,6 +470,18 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
         "vector": "qdrant",
         "graph": "neo4j",
         "bm25": "bm25_index",
+    }
+    assert configured.pipeline._embedding_provider is embedding_provider
+    assert configured.provider_sources == {
+        "embedding": {
+            "provider": "mock",
+            "model": "BAAI/bge-m3",
+            "adapter": "qdrant",
+        },
+        "reranker": {
+            "provider": "mock",
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
     }
     assert len(FakeVectorStore.constructor_calls) == 1
     assert len(FakeGraphStore.constructor_calls) == 1
@@ -465,3 +559,57 @@ def test_add_runtime_debug_trace_labels_candidate_sources():
     assert labeled["bm25Candidates"][0]["source"] == "bm25"
     assert labeled["fusionScores"][0]["source"] == "hybrid"
     assert labeled["rerankerScores"][0]["source"] == "hybrid"
+
+
+def test_add_runtime_debug_trace_copies_provider_sources_without_mutating_inputs():
+    from backend.app.retrieval.runtime import add_runtime_debug_trace
+
+    trace = {
+        "vectorCandidates": [{"id": "v"}],
+        "graphCandidates": [],
+        "bm25Candidates": [],
+        "fusionScores": [],
+        "rerankerScores": [],
+    }
+    candidate_sources = {"vector": "local", "graph": "local", "bm25": "local"}
+    provider_sources = {
+        "embedding": {"provider": "mock", "model": "BAAI/bge-m3"},
+        "reranker": {
+            "provider": "mock",
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    }
+
+    labeled = add_runtime_debug_trace(
+        trace,
+        candidate_sources,
+        provider_sources,
+    )
+    labeled["providerSources"]["embedding"]["model"] = "changed"
+
+    assert trace == {
+        "vectorCandidates": [{"id": "v"}],
+        "graphCandidates": [],
+        "bm25Candidates": [],
+        "fusionScores": [],
+        "rerankerScores": [],
+    }
+    assert candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
+    assert provider_sources["embedding"]["model"] == "BAAI/bge-m3"
+
+
+def test_add_runtime_debug_trace_omits_provider_sources_when_not_supplied():
+    from backend.app.retrieval.runtime import add_runtime_debug_trace
+
+    labeled = add_runtime_debug_trace(
+        {
+            "vectorCandidates": [],
+            "graphCandidates": [],
+            "bm25Candidates": [],
+            "fusionScores": [],
+            "rerankerScores": [],
+        },
+        {"vector": "local", "graph": "local", "bm25": "local"},
+    )
+
+    assert "providerSources" not in labeled

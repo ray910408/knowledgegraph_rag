@@ -7,6 +7,10 @@ from typing import Protocol, Sequence
 
 class EmbeddingProvider(Protocol):
     @property
+    def provider_kind(self) -> str:
+        ...
+
+    @property
     def model_name(self) -> str:
         ...
 
@@ -27,6 +31,10 @@ class DeterministicMockEmbeddingProvider:
     @property
     def model_name(self) -> str:
         return self._model_name
+
+    @property
+    def provider_kind(self) -> str:
+        return "mock"
 
     def embed_text(self, text: str) -> list[float]:
         normalized = " ".join(text.lower().split())

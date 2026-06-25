@@ -7,6 +7,7 @@ import type {
   GraphPathTrace,
   EvidencePath,
   InputKind,
+  MatchedProblem,
   RequiredConcept,
   RetrievalMode,
   RetrievalTrace,
@@ -64,6 +65,15 @@ function formatScore(value: unknown): string {
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function candidateKey(title: string, candidate: TraceCandidate, index: number): string {
+  const storeCandidateId = asText(candidate.payload?.storeCandidateId ?? candidate.payload?.store_candidate_id);
+  const rawChunkIds = candidate.rawChunks
+    ?.map((chunk) => asText(chunk.payload?.storeCandidateId ?? chunk.payload?.store_candidate_id))
+    .filter(Boolean)
+    .join("|");
+  return `${title}-${candidate.title ?? ""}-${candidate.id}-${storeCandidateId || rawChunkIds || index}`;
 }
 
 function JsonBlock({ value }: { value: unknown }) {
@@ -241,6 +251,7 @@ function EmptyState() {
 function AnalysisResult({ response }: { response: AnalysisResponse }) {
   const trace = response.retrievalTrace;
   const evidence = response.evidenceBundle;
+  const matchedProblem = response.matchedProblem ?? evidence?.matchedProblem ?? trace?.matchedProblem;
 
   return (
     <div className="analysis-result">
@@ -259,6 +270,7 @@ function AnalysisResult({ response }: { response: AnalysisResponse }) {
         <p>{response.similarityReason}</p>
       </OutputBlock>
 
+      <MatchedProblemPanel problem={matchedProblem} />
       <QueryUnderstandingPanel trace={trace} />
       <RetrievalPanel trace={trace} />
       <FusionPanel trace={trace} />
@@ -297,6 +309,46 @@ function AnalysisResult({ response }: { response: AnalysisResponse }) {
   );
 }
 
+function MatchedProblemPanel({ problem }: { problem?: MatchedProblem }) {
+  if (!problem) {
+    return null;
+  }
+
+  return (
+    <OutputBlock title="命中題目">
+      <p className="problem-type">
+        {problem.sourceId || problem.id} - {problem.title}
+      </p>
+      <div className="kv-grid">
+        <div>
+          <span>ID</span>
+          <strong>{problem.id}</strong>
+        </div>
+        <div>
+          <span>來源</span>
+          <strong>{problem.source || "-"}</strong>
+        </div>
+        <div>
+          <span>命中方式</span>
+          <strong>{problem.matchKind || "-"}</strong>
+        </div>
+        <div>
+          <span>信心</span>
+          <strong>{formatScore(problem.confidence)}</strong>
+        </div>
+      </div>
+      {problem.sharedConcepts.length > 0 && (
+        <div className="chips">
+          {problem.sharedConcepts.map((concept, index) => (
+            <span key={`${concept}-${index}`}>{concept}</span>
+          ))}
+        </div>
+      )}
+      {problem.answerHint && <p>{problem.answerHint}</p>}
+    </OutputBlock>
+  );
+}
+
 function FlowStrip() {
   return (
     <ol className="flow-strip">
@@ -315,15 +367,15 @@ function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
     <OutputBlock title="查詢理解">
       <div className="kv-grid">
         <div>
-          <span>Intent</span>
+          <span>意圖</span>
           <strong>{understanding?.intent ?? "-"}</strong>
         </div>
         <div>
-          <span>Input kind</span>
+          <span>輸入類型</span>
           <strong>{understanding?.inputKind ?? "-"}</strong>
         </div>
         <div>
-          <span>Keywords</span>
+          <span>關鍵詞</span>
           <strong>{understanding?.keywords?.join(", ") || "-"}</strong>
         </div>
       </div>
@@ -342,9 +394,9 @@ function RetrievalPanel({ trace }: { trace?: RetrievalTrace }) {
   return (
     <OutputBlock title="三路檢索">
       <div className="retrieval-grid">
-        <CandidateList title="Vector Search / Qdrant" candidates={trace?.vectorCandidates ?? []} />
-        <CandidateList title="Graph Search / Neo4j" candidates={trace?.graphCandidates ?? []} />
-        <CandidateList title="BM25 Search" candidates={trace?.bm25Candidates ?? []} />
+        <CandidateList title="向量搜尋 / Qdrant" candidates={trace?.vectorCandidates ?? []} />
+        <CandidateList title="圖搜尋 / Neo4j" candidates={trace?.graphCandidates ?? []} />
+        <CandidateList title="BM25 關鍵字搜尋" candidates={trace?.bm25Candidates ?? []} />
       </div>
     </OutputBlock>
   );
@@ -352,10 +404,10 @@ function RetrievalPanel({ trace }: { trace?: RetrievalTrace }) {
 
 function FusionPanel({ trace }: { trace?: RetrievalTrace }) {
   return (
-    <OutputBlock title="Hybrid Fusion / Reranker">
+    <OutputBlock title="混合融合 / 重排序">
       <div className="retrieval-grid two">
-        <CandidateList title="Fusion scores" candidates={trace?.fusionScores ?? []} />
-        <CandidateList title="Reranker scores" candidates={trace?.rerankerScores ?? []} />
+        <CandidateList title="融合分數" candidates={trace?.fusionScores ?? []} />
+        <CandidateList title="重排序分數" candidates={trace?.rerankerScores ?? []} />
       </div>
     </OutputBlock>
   );
@@ -382,12 +434,13 @@ function EvidenceBundlePanel({ evidence }: { evidence?: EvidenceBundle }) {
   }
 
   return (
-    <OutputBlock title="Evidence Builder">
+    <OutputBlock title="證據整理">
       <div className="evidence-bundle">
-        <EvidenceList title="Algorithm" items={evidence.algorithmEvidence} />
-        <EvidenceList title="Data Structure" items={evidence.dataStructureEvidence} />
-        <EvidenceList title="Pattern" items={evidence.patternEvidence} />
-        <EvidenceList title="Common Mistakes" items={evidence.commonMistakes} />
+        <EvidenceList title="演算法" items={evidence.algorithmEvidence} />
+        <EvidenceList title="資料結構" items={evidence.dataStructureEvidence} />
+        <EvidenceList title="技巧 / 狀態追蹤" items={evidence.techniqueEvidence ?? []} />
+        <EvidenceList title="題型" items={evidence.patternEvidence} />
+        <EvidenceList title="常見錯誤" items={evidence.commonMistakes} />
       </div>
     </OutputBlock>
   );
@@ -410,8 +463,8 @@ function CandidateList({ title, candidates }: { title: string; candidates: Trace
         <p className="muted">沒有候選。</p>
       ) : (
         <ol>
-          {candidates.slice(0, 4).map((candidate) => (
-            <li key={`${title}-${candidate.id}`}>
+          {candidates.slice(0, 4).map((candidate, index) => (
+            <li key={candidateKey(title, candidate, index)}>
               <div className="candidate-main">
                 <strong>{candidate.title || candidate.id}</strong>
                 <span>
@@ -421,6 +474,12 @@ function CandidateList({ title, candidates }: { title: string; candidates: Trace
                 </span>
                 {candidate.concepts && candidate.concepts.length > 0 && (
                   <span>{candidate.concepts.slice(0, 5).join(", ")}</span>
+                )}
+                {candidate.rawChunks && candidate.rawChunks.length > 0 && (
+                  <details className="payload-details">
+                    <summary>原始 chunks ({candidate.rawChunks.length})</summary>
+                    <JsonBlock value={candidate.rawChunks} />
+                  </details>
                 )}
                 {candidate.payload && (
                   <details className="payload-details">
@@ -502,6 +561,8 @@ function OrderedItems({ items }: { items: string[] }) {
 
 function ModelPanel({ response }: { response: AnalysisResponse | null }) {
   const config = response?.retrievalConfig;
+  const embedding = config?.embeddingProvider;
+  const reranker = config?.rerankerProvider;
 
   return (
     <section className="panel model-panel">
@@ -514,11 +575,19 @@ function ModelPanel({ response }: { response: AnalysisResponse | null }) {
       <dl className="model-list">
         <div>
           <dt>Embedding</dt>
-          <dd>{config?.embeddingModel ?? "BAAI/bge-m3"}</dd>
+          <dd>
+            {embedding
+              ? `${embedding.provider} / ${embedding.adapter || "local"} / ${embedding.model}`
+              : (config?.embeddingModel ?? "BAAI/bge-m3")}
+          </dd>
         </div>
         <div>
           <dt>Reranker</dt>
-          <dd>{config?.rerankerModel ?? "BAAI/bge-reranker-v2-m3"}</dd>
+          <dd>
+            {reranker
+              ? `${reranker.provider} / ${reranker.model}`
+              : (config?.rerankerModel ?? "BAAI/bge-reranker-v2-m3")}
+          </dd>
         </div>
         <div>
           <dt>Language</dt>
@@ -534,8 +603,8 @@ function EvidencePathPanel({ paths }: { paths: EvidencePath[] }) {
     <section className="panel evidence-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Graph Evidence</p>
-          <h2>證據路徑</h2>
+          <p className="eyebrow">圖證據</p>
+          <h2>Graph Evidence</h2>
         </div>
       </div>
 
@@ -573,35 +642,37 @@ function GraphPathsPanel({ paths }: { paths: GraphPathTrace[] }) {
     <section className="panel graph-paths-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Graph Trace</p>
+          <p className="eyebrow">圖路徑追蹤</p>
           <h2>Graph Paths</h2>
         </div>
       </div>
 
       {paths.length === 0 ? (
-        <p className="muted">No graph paths.</p>
+        <p className="muted">沒有圖路徑。</p>
       ) : (
         paths.map((path, index) => (
           <article className="graph-path-card" key={`graph-path-${index}`}>
             <dl>
               <div>
-                <dt>Nodes</dt>
+                <dt>節點</dt>
                 <dd>{formatPathPart(path.nodes)}</dd>
               </div>
               <div>
-                <dt>Relations</dt>
+                <dt>關係</dt>
                 <dd>{formatPathPart(path.relations)}</dd>
               </div>
               <div>
-                <dt>Rationale</dt>
+                <dt>依據</dt>
                 <dd>{path.rationale || "-"}</dd>
               </div>
-              {typeof path.score === "number" && (
-                <div>
-                  <dt>Score</dt>
-                  <dd>{formatScore(path.score)}</dd>
-                </div>
-              )}
+              <div>
+                <dt>分數</dt>
+                <dd>{formatScore(path.score)}</dd>
+              </div>
+              <div>
+                <dt>來源</dt>
+                <dd>{path.pathSource === "inferred" ? "推論 fallback" : (path.pathSource ?? "-")}</dd>
+              </div>
             </dl>
             {path.storePath && (
               <details className="payload-details">

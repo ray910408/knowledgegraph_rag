@@ -21,3 +21,5 @@ data/processed/*
 !data/processed/.gitkeep
 
 *.log
+
+docs/superpowers/*

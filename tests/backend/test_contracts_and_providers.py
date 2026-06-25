@@ -92,6 +92,7 @@ def test_retrieval_trace_and_evidence_bundle_have_expected_debug_shape():
         bm25_candidates=[{"id": "uva-10653", "score": 2.0}],
         fusion_scores=[{"id": "leetcode-994", "score": 1.0}],
         reranker_scores=[{"id": "leetcode-994", "score": 0.95}],
+        matched_problem={"id": "uva-10653", "matchKind": "exact_problem_id"},
     )
     bundle = RetrievalEvidenceBundle(
         similar_problems=[{"id": "leetcode-994"}],
@@ -99,7 +100,9 @@ def test_retrieval_trace_and_evidence_bundle_have_expected_debug_shape():
         algorithm_evidence=["BFS"],
         data_structure_evidence=["Queue"],
         pattern_evidence=["Graph Traversal"],
+        technique_evidence=["grid BFS"],
         common_mistakes=["forget visited"],
+        matched_problem={"id": "uva-10653", "matchKind": "exact_problem_id"},
     )
 
     assert set(trace.to_mapping()) == {
@@ -110,8 +113,11 @@ def test_retrieval_trace_and_evidence_bundle_have_expected_debug_shape():
         "bm25Candidates",
         "fusionScores",
         "rerankerScores",
+        "matchedProblem",
     }
     assert bundle.to_mapping()["commonMistakes"] == ["forget visited"]
+    assert bundle.to_mapping()["matchedProblem"] == {"id": "uva-10653", "matchKind": "exact_problem_id"}
+    assert bundle.to_mapping()["techniqueEvidence"] == ["grid BFS"]
 
 
 def test_deterministic_mock_embedding_provider_is_stable_and_normalized():
@@ -127,6 +133,13 @@ def test_deterministic_mock_embedding_provider_is_stable_and_normalized():
     assert len(first) == 8
     assert math.isclose(sum(value * value for value in first), 1.0, rel_tol=1e-6)
     assert provider.embed_batch(["BFS shortest path", "BFS shortest path"]) == [first, first]
+
+
+def test_deterministic_mock_embedding_provider_declares_provider_kind():
+    provider = DeterministicMockEmbeddingProvider(dimension=8)
+
+    assert provider.model_name == "BAAI/bge-m3"
+    assert provider.provider_kind == "mock"
 
 
 def test_store_protocols_are_structural_contracts():
