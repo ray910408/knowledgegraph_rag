@@ -23,3 +23,4 @@ data/processed/*
 *.log
 
 docs/superpowers/*
+*.png
