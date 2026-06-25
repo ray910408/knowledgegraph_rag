@@ -700,20 +700,21 @@ class ContextBuilder:
                 lines.append(f"  解題提示: {hint}")
         else:
             lines.append("- 無")
-        lines.extend(["", "相似題"])
-        for problem in evidence["similarProblems"]:
-            lines.append(
-                f"- {problem['id']} {problem['title']} "
-                f"(score={problem['score']}, concepts={', '.join(problem['sharedConcepts'])})"
-            )
-            if problem.get("answerHint"):
-                lines.append(f"  答案摘要: {problem['answerHint']}")
-            for hint in problem.get("solutionHints", []):
-                lines.append(f"  解題提示: {hint}")
-            if problem.get("difficulty"):
-                lines.append(f"  難度: {problem['difficulty']}")
-            if problem.get("constraints"):
-                lines.append(f"  限制: {', '.join(problem['constraints'])}")
+        if evidence["similarProblems"]:
+            lines.extend(["", "相似題"])
+            for problem in evidence["similarProblems"]:
+                lines.append(
+                    f"- {problem['id']} {problem['title']} "
+                    f"(score={problem['score']}, concepts={', '.join(problem['sharedConcepts'])})"
+                )
+                if problem.get("answerHint"):
+                    lines.append(f"  答案摘要: {problem['answerHint']}")
+                for hint in problem.get("solutionHints", []):
+                    lines.append(f"  解題提示: {hint}")
+                if problem.get("difficulty"):
+                    lines.append(f"  難度: {problem['difficulty']}")
+                if problem.get("constraints"):
+                    lines.append(f"  限制: {', '.join(problem['constraints'])}")
         lines.extend(["", "圖路徑"])
         for path in evidence["graphPaths"]:
             nodes = [str(node) for node in path.get("nodes", [])]

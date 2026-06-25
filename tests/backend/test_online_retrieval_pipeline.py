@@ -1069,6 +1069,42 @@ def test_context_builder_includes_matched_problem_separately():
     assert "leetcode-1091 Shortest Path in Binary Matrix" in context
 
 
+def test_context_builder_omits_similar_problem_section_when_empty():
+    matched = ExactProblemMatcher((_uva_document(),)).match(
+        QueryUnderstandingService((_uva_document(),)).understand(
+            "UVA-10653 - Bombs! NO they are Mines!!"
+        )
+    )
+    assert matched is not None
+    evidence = EvidenceBuilder().build(
+        (matched.candidate,),
+        (
+            {
+                "nodes": ["uva-10653", "concept:bfs"],
+                "relations": ["USES"],
+                "rationale": "matched problem uses BFS",
+            },
+        ),
+        matched_problem=matched,
+    )
+
+    context = ContextBuilder().build(
+        QueryUnderstandingService((_uva_document(),)).understand(
+            "UVA-10653 - Bombs! NO they are Mines!!"
+        ),
+        evidence,
+    )
+
+    assert evidence.to_mapping()["similarProblems"] == []
+    assert "命中題目" in context
+    assert "id: uva-10653" in context
+    assert "相似題" not in context
+    assert "圖路徑" in context
+    assert "uva-10653 -> concept:bfs" in context
+    assert "演算法證據" in context
+    assert "常見錯誤" in context
+
+
 def test_online_pipeline_trace_has_required_debug_sections():
     result = OnlineQueryPipeline(documents=_documents()).run("BFS shortest path", top_k=2)
 
