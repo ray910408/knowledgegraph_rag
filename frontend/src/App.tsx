@@ -307,13 +307,15 @@ function AnalysisResult({ response }: { response: AnalysisResponse }) {
         </div>
       </OutputBlock>
 
-      <OutputBlock title="相似題">
-        <div className="similar-list">
-          {response.similarProblems.map((problem) => (
-            <SimilarProblemCard key={`${problem.source}-${problem.id}`} problem={problem} />
-          ))}
-        </div>
-      </OutputBlock>
+      {response.similarProblems.length > 0 && (
+        <OutputBlock title="相似題">
+          <div className="similar-list">
+            {response.similarProblems.map((problem) => (
+              <SimilarProblemCard key={`${problem.source}-${problem.id}`} problem={problem} />
+            ))}
+          </div>
+        </OutputBlock>
+      )}
 
       <TwoColumnLists
         leftTitle="解題提示"
