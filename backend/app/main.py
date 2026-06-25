@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+import math
+from collections.abc import Mapping
+from typing import Any, Literal, Sequence
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from .analysis import analyze_programming_input, load_programming_dataset
+from .analysis import analyze_programming_input, build_query_id, load_programming_dataset
 from .demo import build_demo_repositories, recommend_demo_techniques
 from .retrieval.pipeline import ContextBuilder, EvidenceBuilder
 from .retrieval.runtime import RuntimeRetrieval, add_runtime_debug_trace, build_runtime_retrieval
@@ -96,6 +98,13 @@ class AnalysisRequest(BaseModel):
     )
     statement: str | None = None
     code: str | None = None
+    mode: RecommendationMode = "hybrid"
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices("topK", "top_k"),
+    )
 
 
 class SimilarProblemResponse(BaseModel):
@@ -114,10 +123,18 @@ class RequiredConceptResponse(BaseModel):
     description: str
 
 
+class ProviderDescriptorResponse(BaseModel):
+    provider: str
+    model: str
+    adapter: str | None = None
+
+
 class RetrievalConfigResponse(BaseModel):
     embeddingModel: str
     rerankerModel: str
     language: str
+    embeddingProvider: ProviderDescriptorResponse | None = None
+    rerankerProvider: ProviderDescriptorResponse | None = None
 
 
 class AnalysisEvidenceNodeResponse(BaseModel):
@@ -139,6 +156,22 @@ class AnalysisEvidencePathResponse(BaseModel):
     edges: list[AnalysisEvidenceEdgeResponse]
 
 
+class MatchedProblemResponse(BaseModel):
+    id: str
+    title: str
+    source: str
+    sourceId: str
+    matchKind: str
+    confidence: float
+    score: float
+    sharedConcepts: list[str] = Field(default_factory=list)
+    problemType: str
+    answerHint: str | None = None
+    solutionHints: list[str] = Field(default_factory=list)
+    difficulty: str | None = None
+    constraints: list[str] = Field(default_factory=list)
+
+
 class AnalysisResponse(BaseModel):
     queryId: str
     usedMockData: bool
@@ -155,6 +188,72 @@ class AnalysisResponse(BaseModel):
     retrievalTrace: dict[str, Any] | None = None
     evidenceBundle: dict[str, Any] | None = None
     contextPreview: str | None = None
+    matchedProblem: MatchedProblemResponse | None = None
+
+
+def _analysis_paths_from_graph_trace(
+    paths: Sequence[object],
+) -> list[AnalysisEvidencePathResponse]:
+    converted: list[AnalysisEvidencePathResponse] = []
+    for path in paths:
+        if not isinstance(path, Mapping):
+            continue
+
+        raw_nodes = path.get("nodes", [])
+        raw_relations = path.get("relations", [])
+        if not isinstance(raw_nodes, (list, tuple)) or len(raw_nodes) < 2:
+            continue
+        if not isinstance(raw_relations, (list, tuple)) or not raw_relations:
+            continue
+
+        nodes = [str(node) for node in raw_nodes]
+        relations = [str(relation) for relation in raw_relations]
+        edge_count = len(nodes) - 1
+        if len(relations) != edge_count:
+            continue
+
+        try:
+            score = float(path.get("score", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            score = 0.0
+        if not math.isfinite(score):
+            score = 0.0
+        source = str(path.get("pathSource") or "unknown")
+        converted.append(
+            AnalysisEvidencePathResponse(
+                title=f"Graph path {len(converted) + 1} ({source})",
+                nodes=[
+                    AnalysisEvidenceNodeResponse(
+                        id=node,
+                        label=node,
+                        type=_graph_trace_node_type(node),
+                    )
+                    for node in nodes
+                ],
+                edges=[
+                    AnalysisEvidenceEdgeResponse(
+                        **{
+                            "from": nodes[index],
+                            "to": nodes[index + 1],
+                            "relation": relations[index],
+                            "weight": score,
+                        }
+                    )
+                    for index in range(edge_count)
+                ],
+            )
+        )
+    return converted
+
+
+def _graph_trace_node_type(node: str) -> str:
+    if node == "input":
+        return "input"
+    if node.startswith("concept:"):
+        return "concept"
+    if node.startswith("pattern:"):
+        return "pattern"
+    return "problem"
 
 
 app = FastAPI(title="Explainable Programming GraphRAG", version="0.1.0")
@@ -244,6 +343,15 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
     ).strip()
     if not text:
         raise HTTPException(status_code=400, detail="input, problemText, statement, or code is required")
+    retrieval_query = (
+        request.input
+        or request.problem_text
+        or request.statement
+        or request.code
+        or request.problem_id
+        or resolved_problem_text
+        or ""
+    ).strip()
 
     try:
         result = analyze_programming_input(text)
@@ -251,26 +359,45 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     runtime_retrieval = _runtime_retrieval()
-    pipeline_result = runtime_retrieval.pipeline.run(text, top_k=5)
+    pipeline_result = runtime_retrieval.pipeline.run(
+        retrieval_query,
+        mode=request.mode,
+        top_k=request.top_k,
+    )
     retrieval_trace = pipeline_result.trace.to_mapping()
     if debug:
         retrieval_trace = add_runtime_debug_trace(
             retrieval_trace,
             runtime_retrieval.candidate_sources,
+            runtime_retrieval.provider_sources,
         )
     evidence_bundle = EvidenceBuilder().build(
         pipeline_result.reranked_candidates,
         pipeline_result.graph_paths,
+        matched_problem=pipeline_result.matched_problem,
+    )
+    evidence_mapping = evidence_bundle.to_mapping()
+    retrieval_evidence_paths = _analysis_paths_from_graph_trace(
+        evidence_mapping["graphPaths"]
     )
     context_preview = ContextBuilder().build(
         pipeline_result.query_understanding,
         evidence_bundle,
     )
+    input_kind = pipeline_result.query_understanding.input_kind
+    matched_problem_ids = (
+        {
+            pipeline_result.matched_problem.problem_id,
+            pipeline_result.matched_problem.source_id,
+        }
+        if pipeline_result.matched_problem is not None
+        else set()
+    )
 
     return AnalysisResponse(
-        queryId=result.query_id,
+        queryId=build_query_id(text, input_kind),
         usedMockData=result.used_mock_data,
-        inputKind=result.input_kind,
+        inputKind=input_kind,
         problemType=result.problem_type,
         requiredConcepts=[
             RequiredConceptResponse(
@@ -281,21 +408,15 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
             )
             for concept in result.required_concepts
         ],
-        similarProblems=[
-            SimilarProblemResponse(
-                source=problem.source,
-                id=problem.id,
-                title=problem.title,
-                reason=problem.reason,
-                sharedConcepts=list(problem.shared_concepts),
-                answerHint=problem.answer_hint,
-            )
-            for problem in result.similar_problems
-        ],
+        similarProblems=_similar_problem_responses_from_candidates(
+            pipeline_result.reranked_candidates,
+            matched_problem_ids=matched_problem_ids,
+        ),
         similarityReason=result.similarity_reason,
         solvingHints=list(result.solving_hints),
         commonMistakes=list(result.common_mistakes),
-        evidencePaths=[
+        evidencePaths=retrieval_evidence_paths
+        or [
             AnalysisEvidencePathResponse(
                 title=path.title,
                 nodes=[
@@ -324,12 +445,64 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
             embeddingModel=result.retrieval_config.embedding_model,
             rerankerModel=result.retrieval_config.reranker_model,
             language=result.retrieval_config.language,
+            embeddingProvider=_provider_descriptor_response(
+                runtime_retrieval.provider_sources.get("embedding")
+            ),
+            rerankerProvider=_provider_descriptor_response(
+                runtime_retrieval.provider_sources.get("reranker")
+            ),
         ),
         retrievalBackend=runtime_retrieval.backend if debug else None,
         retrievalTrace=retrieval_trace,
-        evidenceBundle=evidence_bundle.to_mapping(),
+        evidenceBundle=evidence_mapping,
         contextPreview=context_preview if debug else None,
+        matchedProblem=(
+            pipeline_result.matched_problem.to_mapping()
+            if pipeline_result.matched_problem is not None
+            else None
+        ),
     )
+
+
+def _provider_descriptor_response(
+    descriptor: dict[str, Any] | None,
+) -> ProviderDescriptorResponse | None:
+    if descriptor is None:
+        return None
+    return ProviderDescriptorResponse(**descriptor)
+
+
+def _similar_problem_responses_from_candidates(
+    candidates: Sequence[object],
+    *,
+    matched_problem_ids: set[str],
+) -> list[SimilarProblemResponse]:
+    responses: list[SimilarProblemResponse] = []
+    for candidate in candidates:
+        candidate_id = str(getattr(candidate, "id", ""))
+        payload = getattr(candidate, "payload", {})
+        payload_map = payload if isinstance(payload, Mapping) else {}
+        source_id = str(payload_map.get("sourceId") or candidate_id)
+        if candidate_id in matched_problem_ids or source_id in matched_problem_ids:
+            continue
+        concepts = [str(concept) for concept in getattr(candidate, "concepts", ())]
+        responses.append(
+            SimilarProblemResponse(
+                source=str(payload_map.get("documentSource") or getattr(candidate, "source", "")),
+                id=source_id,
+                title=str(getattr(candidate, "title", "")),
+                reason=_similar_problem_reason(concepts),
+                sharedConcepts=concepts,
+                answerHint=str(payload_map.get("answer") or ""),
+            )
+        )
+    return responses
+
+
+def _similar_problem_reason(concepts: Sequence[str]) -> str:
+    if concepts:
+        return f"所選檢索模式將此題列為最終候選，並共享這些概念：{'、'.join(concepts)}。"
+    return "所選檢索模式將此題列為最終重排序候選。"
 
 
 def _analysis_problem_text(problem_id: str | None) -> str | None:

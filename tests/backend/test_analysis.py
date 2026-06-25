@@ -4,9 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.analysis import find_graph_traversal_examples, load_programming_dataset
-from backend.app.main import app
+from backend.app.contracts import RetrievalTrace
+from backend.app.main import AnalysisRequest, _analysis_paths_from_graph_trace, app
 from backend.app.providers import DeterministicMockEmbeddingProvider
-from backend.app.retrieval.pipeline import OnlineQueryPipeline, RetrievalDocument
+from backend.app.retrieval.pipeline import (
+    ExactProblemMatch,
+    OnlineQueryPipeline,
+    OnlineQueryResult,
+    QueryUnderstanding,
+    RetrievalCandidate,
+    RetrievalDocument,
+)
 from backend.app.retrieval.runtime import RuntimeRetrieval
 
 
@@ -158,6 +166,14 @@ def test_analysis_response_includes_retrieval_model_config_contract():
         "embeddingModel": "BAAI/bge-m3",
         "rerankerModel": "BAAI/bge-reranker-v2-m3",
         "language": "zh-Hant",
+        "embeddingProvider": {
+            "provider": "mock",
+            "model": "BAAI/bge-m3",
+        },
+        "rerankerProvider": {
+            "provider": "mock",
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
     }
 
 
@@ -200,7 +216,7 @@ def test_analysis_debug_mode_includes_context_preview_and_retrieval_backend():
     payload = response.json()
     assert payload["retrievalBackend"] == "local"
     assert "contextPreview" in payload
-    assert "Query Understanding" in payload["contextPreview"]
+    assert "查詢理解" in payload["contextPreview"]
     assert payload["retrievalTrace"]["candidateSources"] == {
         "vector": "local",
         "graph": "local",
@@ -208,6 +224,24 @@ def test_analysis_debug_mode_includes_context_preview_and_retrieval_backend():
     }
     assert payload["retrievalTrace"]["vectorCandidates"][0]["candidateSource"] == "local"
     assert payload["retrievalTrace"]["bm25Candidates"][0]["candidateSource"] == "local"
+    assert payload["retrievalTrace"]["providerSources"] == {
+        "embedding": {
+            "provider": "mock",
+            "model": "BAAI/bge-m3",
+        },
+        "reranker": {
+            "provider": "mock",
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    }
+    assert payload["retrievalConfig"]["embeddingProvider"] == {
+        "provider": "mock",
+        "model": "BAAI/bge-m3",
+    }
+    assert payload["retrievalConfig"]["rerankerProvider"] == {
+        "provider": "mock",
+        "model": "BAAI/bge-reranker-v2-m3",
+    }
 
 
 def test_analysis_debug_mode_uses_configured_runtime_retrieval():
@@ -233,6 +267,17 @@ def test_analysis_debug_mode_uses_configured_runtime_retrieval():
             "graph": "fake_graph",
             "bm25": "fake_bm25",
         },
+        provider_sources={
+            "embedding": {
+                "provider": "fake_embedding",
+                "model": "fake-embedding-model",
+                "adapter": "qdrant",
+            },
+            "reranker": {
+                "provider": "mock",
+                "model": "BAAI/bge-reranker-v2-m3",
+            },
+        },
     )
     client = TestClient(app)
 
@@ -256,7 +301,478 @@ def test_analysis_debug_mode_uses_configured_runtime_retrieval():
     assert trace["vectorCandidates"][0]["candidateSource"] == "fake_vector"
     assert trace["graphCandidates"][0]["candidateSource"] == "fake_graph"
     assert trace["bm25Candidates"][0]["candidateSource"] == "fake_bm25"
+    assert trace["providerSources"] == {
+        "embedding": {
+            "provider": "fake_embedding",
+            "model": "fake-embedding-model",
+            "adapter": "qdrant",
+        },
+        "reranker": {
+            "provider": "mock",
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    }
+    assert payload["retrievalConfig"]["embeddingProvider"] == {
+        "provider": "fake_embedding",
+        "model": "fake-embedding-model",
+        "adapter": "qdrant",
+    }
+    assert payload["retrievalConfig"]["rerankerProvider"] == {
+        "provider": "mock",
+        "model": "BAAI/bge-reranker-v2-m3",
+    }
     assert payload["evidenceBundle"]["similarProblems"][0]["id"] == "fake-runtime-bfs"
+
+
+def test_analysis_paths_skip_non_mapping_items_and_convert_later_valid_paths():
+    converted = _analysis_paths_from_graph_trace(
+        [
+            None,
+            {
+                "nodes": ["input", "uva-10653"],
+                "relations": ["EXACT_MATCH"],
+                "score": 1.0,
+                "pathSource": "neo4j",
+            },
+        ]
+    )
+
+    assert len(converted) == 1
+    assert converted[0].title == "Graph path 1 (neo4j)"
+    assert converted[0].edges[0].weight == 1.0
+
+
+def test_analysis_paths_skip_inconsistent_node_relation_counts():
+    converted = _analysis_paths_from_graph_trace(
+        [
+            {
+                "nodes": ["input", "uva-10653", "concept:bfs"],
+                "relations": ["EXACT_MATCH"],
+                "score": 1.0,
+                "pathSource": "neo4j",
+            },
+            {
+                "nodes": ["input", "uva-10653"],
+                "relations": ["EXACT_MATCH"],
+                "score": 1.0,
+                "pathSource": "inferred",
+            },
+        ]
+    )
+
+    assert len(converted) == 1
+    assert converted[0].title == "Graph path 1 (inferred)"
+    assert [node.id for node in converted[0].nodes] == ["input", "uva-10653"]
+
+
+@pytest.mark.parametrize("score", ["bad", None, float("nan"), float("inf"), float("-inf")])
+def test_analysis_paths_use_zero_score_for_malformed_or_non_finite_values(score):
+    converted = _analysis_paths_from_graph_trace(
+        [
+            {
+                "nodes": ["input", "concept:bfs"],
+                "relations": ["REQUIRES"],
+                "score": score,
+            }
+        ]
+    )
+
+    assert converted[0].edges[0].weight == 0.0
+
+
+def test_analysis_graph_mode_empty_reranked_candidates_keeps_top_level_similar_empty():
+    matched_candidate = RetrievalCandidate(
+        id="uva-10653",
+        title="Bombs! NO they are Mines!!",
+        source="UVa",
+        score=1.0,
+        text="Find the shortest safe path on a grid with bomb cells.",
+        concepts=("BFS", "Queue", "Visited Array"),
+        problem_type="Graph Traversal",
+        payload={
+            "documentSource": "UVa",
+            "sourceId": "10653",
+            "answer": "Run BFS from the start cell while skipping bomb cells.",
+            "solutionHints": ("Mark bomb cells before BFS.",),
+            "difficulty": "Medium",
+            "constraints": (),
+        },
+    )
+    matched_problem = ExactProblemMatch(
+        problem_id=matched_candidate.id,
+        title=matched_candidate.title,
+        source=matched_candidate.source,
+        source_id="10653",
+        match_kind="exact_title",
+        confidence=1.0,
+        candidate=matched_candidate,
+    )
+    expected_result = OnlineQueryResult(
+        query_understanding=QueryUnderstanding(
+            original_query="UVA-10653 - Bombs! NO they are Mines!!",
+            normalized_query="uva-10653 bombs no they are mines",
+            input_kind="problem",
+            intent="problem_search",
+            keywords=("uva", "10653", "bombs", "mines"),
+        ),
+        linked_entities=(),
+        matched_problem=matched_problem,
+        vector_candidates=(),
+        graph_candidates=(),
+        bm25_candidates=(),
+        fused_candidates=(),
+        reranked_candidates=(),
+        graph_paths=(
+            {
+                "nodes": ["input", "uva-10653", "concept:bfs"],
+                "relations": ["EXACT_MATCH", "REQUIRES"],
+                "score": 1.0,
+                "pathSource": "neo4j",
+            },
+        ),
+        trace=RetrievalTrace(
+            query_understanding={
+                "originalQuery": "UVA-10653 - Bombs! NO they are Mines!!",
+                "normalizedQuery": "uva-10653 bombs no they are mines",
+                "inputKind": "problem",
+                "intent": "problem_search",
+                "keywords": ["uva", "10653", "bombs", "mines"],
+            },
+            matched_problem=matched_problem.to_mapping(),
+        ),
+    )
+
+    class EmptyGraphPipeline:
+        def run(
+            self,
+            query: str,
+            *,
+            mode: str = "hybrid",
+            top_k: int = 5,
+        ) -> OnlineQueryResult:
+            assert query == "UVA-10653 - Bombs! NO they are Mines!!"
+            assert mode == "graph"
+            assert top_k == 3
+            return expected_result
+
+    app.state.runtime_retrieval = RuntimeRetrieval(
+        backend="stores",
+        pipeline=EmptyGraphPipeline(),  # type: ignore[arg-type]
+        candidate_sources={},
+        provider_sources={},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis",
+        json={
+            "input": "UVA-10653 - Bombs! NO they are Mines!!",
+            "mode": "graph",
+            "topK": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["similarProblems"] == []
+    assert payload["evidenceBundle"]["similarProblems"] == []
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
+    assert payload["evidencePaths"][0]["nodes"][1]["id"] == "uva-10653"
+    assert payload["requiredConcepts"]
+    assert payload["solvingHints"]
+    assert payload["commonMistakes"]
+
+
+def test_analysis_problem_id_only_preserves_exact_id_retrieval():
+    matched_candidate = RetrievalCandidate(
+        id="uva-10653",
+        title="Bombs! NO they are Mines!!",
+        source="UVa",
+        score=1.0,
+        text="Find the shortest safe path on a grid with bomb cells.",
+        concepts=("BFS", "Queue", "Visited Array"),
+        problem_type="Graph Traversal",
+        payload={
+            "documentSource": "UVa",
+            "sourceId": "10653",
+            "answer": "Run BFS from the start cell while skipping bomb cells.",
+            "solutionHints": ("Mark bomb cells before BFS.",),
+            "difficulty": "Medium",
+            "constraints": (),
+        },
+    )
+    similar_candidate = RetrievalCandidate(
+        id="leetcode-1091",
+        title="Shortest Path in Binary Matrix",
+        source="LeetCode",
+        score=0.82,
+        text="Use BFS to find a shortest path in an unweighted binary matrix.",
+        concepts=("BFS", "Queue", "Visited Array"),
+        problem_type="Graph Traversal",
+        payload={
+            "documentSource": "LeetCode",
+            "sourceId": "1091",
+            "answer": "Run BFS over eight directions.",
+            "solutionHints": ("Use a queue.",),
+            "difficulty": "Medium",
+            "constraints": (),
+        },
+    )
+    no_concept_similar_candidate = RetrievalCandidate(
+        id="leetcode-2000",
+        title="Reverse Prefix of Word",
+        source="LeetCode",
+        score=0.72,
+        text="Reverse the prefix of a word up to a target character.",
+        concepts=(),
+        problem_type="String",
+        payload={
+            "documentSource": "LeetCode",
+            "sourceId": "2000",
+            "answer": "Find the index and reverse that prefix.",
+            "solutionHints": ("Use slicing.",),
+            "difficulty": "Easy",
+            "constraints": (),
+        },
+    )
+    matched_problem = ExactProblemMatch(
+        problem_id=matched_candidate.id,
+        title=matched_candidate.title,
+        source=matched_candidate.source,
+        source_id="10653",
+        match_kind="exact_problem_id",
+        confidence=1.0,
+        candidate=matched_candidate,
+    )
+    trace = RetrievalTrace(
+        query_understanding={
+            "originalQuery": "uva-10653",
+            "normalizedQuery": "uva-10653",
+            "inputKind": "problem",
+            "intent": "problem_search",
+            "keywords": ["uva", "10653"],
+        },
+        vector_candidates=[matched_candidate.to_mapping()],
+        graph_candidates=[matched_candidate.to_mapping()],
+        bm25_candidates=[matched_candidate.to_mapping()],
+        fusion_scores=[matched_candidate.to_mapping()],
+        reranker_scores=[matched_candidate.to_mapping()],
+        matched_problem=matched_problem.to_mapping(),
+    )
+    expected_result = OnlineQueryResult(
+        query_understanding=QueryUnderstanding(
+            original_query="uva-10653",
+            normalized_query="uva-10653",
+            input_kind="problem",
+            intent="problem_search",
+            keywords=("uva", "10653"),
+        ),
+        linked_entities=(),
+        matched_problem=matched_problem,
+        vector_candidates=(matched_candidate,),
+        graph_candidates=(matched_candidate,),
+        bm25_candidates=(matched_candidate,),
+        fused_candidates=(matched_candidate,),
+        reranked_candidates=(
+            matched_candidate,
+            similar_candidate,
+            no_concept_similar_candidate,
+        ),
+        graph_paths=(
+            {
+                "nodes": [],
+                "relations": [],
+                "score": 1.0,
+                "pathSource": "neo4j",
+            },
+            {
+                "nodes": ["input", "uva-10653", "concept:bfs"],
+                "relations": ["EXACT_MATCH", "REQUIRES"],
+                "score": 1.0,
+                "pathSource": "neo4j",
+                "rationale": "Neo4j returned the exact problem path.",
+                "storePath": {
+                    "nodes": ["uva-10653", "concept:bfs"],
+                    "relations": ["REQUIRES"],
+                },
+            },
+        ),
+        trace=trace,
+    )
+
+    class RecordingPipeline:
+        def __init__(self, result: OnlineQueryResult) -> None:
+            self.result = result
+            self.last_query: str | None = None
+            self.last_mode: str | None = None
+            self.last_top_k: int | None = None
+
+        def run(
+            self,
+            query: str,
+            *,
+            mode: str = "hybrid",
+            top_k: int = 5,
+        ) -> OnlineQueryResult:
+            self.last_query = query
+            self.last_mode = mode
+            self.last_top_k = top_k
+            return self.result
+
+    pipeline = RecordingPipeline(expected_result)
+    app.state.runtime_retrieval = RuntimeRetrieval(
+        backend="stores",
+        pipeline=pipeline,  # type: ignore[arg-type]
+        candidate_sources={
+            "vector": "fake_vector",
+            "graph": "fake_graph",
+            "bm25": "fake_bm25",
+        },
+        provider_sources={},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis",
+        json={
+            "problemId": "uva-10653",
+            "mode": "graph",
+            "topK": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert pipeline.last_query == "uva-10653"
+    assert pipeline.last_mode == "graph"
+    assert pipeline.last_top_k == 3
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert payload["retrievalTrace"]["matchedProblem"]["id"] == "uva-10653"
+    assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
+    assert all(problem["id"] != "uva-10653" for problem in payload["evidenceBundle"]["similarProblems"])
+    assert [problem["id"] for problem in payload["similarProblems"]] == ["1091", "2000"]
+    assert payload["similarProblems"][0]["source"] == "LeetCode"
+    assert payload["similarProblems"][0]["title"] == "Shortest Path in Binary Matrix"
+    assert payload["similarProblems"][0]["reason"] == (
+        "所選檢索模式將此題列為最終候選，並共享這些概念：BFS、Queue、Visited Array。"
+    )
+    assert payload["similarProblems"][1]["reason"] == "所選檢索模式將此題列為最終重排序候選。"
+    assert payload["evidencePaths"] == [
+        {
+            "title": "Graph path 1 (neo4j)",
+            "nodes": [
+                {"id": "input", "label": "input", "type": "input"},
+                {"id": "uva-10653", "label": "uva-10653", "type": "problem"},
+                {"id": "concept:bfs", "label": "concept:bfs", "type": "concept"},
+            ],
+            "edges": [
+                {
+                    "from": "input",
+                    "to": "uva-10653",
+                    "relation": "EXACT_MATCH",
+                    "weight": 1.0,
+                },
+                {
+                    "from": "uva-10653",
+                    "to": "concept:bfs",
+                    "relation": "REQUIRES",
+                    "weight": 1.0,
+                },
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize("field_name", ["topK", "top_k"])
+def test_analysis_request_accepts_top_k_aliases(field_name):
+    request = AnalysisRequest.model_validate(
+        {
+            "input": "BFS shortest path",
+            "mode": "vector",
+            field_name: 8,
+        }
+    )
+
+    assert request.mode == "vector"
+    assert request.top_k == 8
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_location"),
+    [
+        ({"input": "BFS", "mode": "invalid"}, ("mode",)),
+        ({"input": "BFS", "topK": 0}, ("topK",)),
+        ({"input": "BFS", "top_k": 11}, ("top_k",)),
+    ],
+)
+def test_analysis_request_rejects_invalid_mode_and_top_k(payload, error_location):
+    with pytest.raises(ValueError) as exc_info:
+        AnalysisRequest.model_validate(payload)
+
+    assert error_location in {
+        tuple(error["loc"])
+        for error in exc_info.value.errors()
+    }
+
+
+def test_analysis_exact_problem_query_exposes_consistent_matched_problem():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "UVA-10653 - Bombs! NO they are Mines!!"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["inputKind"] == "problem"
+    assert payload["queryId"].startswith("analysis-problem-")
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert (
+        payload["retrievalTrace"]["matchedProblem"]["id"]
+        == payload["matchedProblem"]["id"]
+        == payload["evidenceBundle"]["matchedProblem"]["id"]
+    )
+    assert all(
+        problem["id"] != "uva-10653"
+        for problem in payload["evidenceBundle"]["similarProblems"]
+    )
+    top_level_similar_problem_ids = [
+        problem["id"] for problem in payload["similarProblems"]
+    ]
+    assert top_level_similar_problem_ids == ["1091", "994"]
+    assert {"uva-10653", "10653"}.isdisjoint(top_level_similar_problem_ids)
+
+
+def test_analysis_exact_source_id_vector_query_preserves_retrieval_similar_problems():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis",
+        json={"input": "10653", "mode": "vector"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert payload["matchedProblem"]["sourceId"] == "10653"
+    top_level_similar_problems = payload["similarProblems"]
+    assert {
+        (problem["source"], problem["id"], problem["title"])
+        for problem in top_level_similar_problems
+    } == {
+        ("LeetCode", "1091", "Shortest Path in Binary Matrix"),
+        ("LeetCode", "994", "Rotting Oranges"),
+    }
+    assert {"uva-10653", "10653"}.isdisjoint(
+        {problem["id"] for problem in top_level_similar_problems}
+    )
+    assert all("Retrieved by selected mode" not in problem["reason"] for problem in top_level_similar_problems)
+    assert all(
+        problem["reason"].startswith("所選檢索模式將此題列為最終候選")
+        for problem in top_level_similar_problems
+    )
 
 
 def test_analysis_unknown_explicit_problem_id_returns_404():

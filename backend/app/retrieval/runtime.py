@@ -9,7 +9,7 @@ from typing import Any, Literal, Mapping, Sequence
 from ..adapters.in_memory import InMemoryBM25Store
 from ..adapters.neo4j import Neo4jGraphStore
 from ..adapters.qdrant import QdrantVectorStore
-from ..providers import EmbeddingProvider
+from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
 from ..stores import BM25Document, SearchCandidate
 from .documents import ProcessedProblemDocumentLoader
 from .pipeline import OnlineQueryPipeline, RetrievalDocument
@@ -40,6 +40,7 @@ class RuntimeRetrieval:
     backend: RetrievalBackend
     pipeline: OnlineQueryPipeline
     candidate_sources: dict[str, str]
+    provider_sources: dict[str, JsonMap]
 
 
 class JsonBM25Store:
@@ -124,14 +125,22 @@ def build_runtime_retrieval(
     embedding_provider: EmbeddingProvider | None = None,
 ) -> RuntimeRetrieval:
     resolved = settings or load_runtime_retrieval_settings()
+    resolved_embedding_provider = embedding_provider or DeterministicMockEmbeddingProvider()
     if resolved.backend == "local":
         return RuntimeRetrieval(
             backend="local",
             pipeline=OnlineQueryPipeline(
                 documents=documents,
-                embedding_provider=embedding_provider,
+                embedding_provider=resolved_embedding_provider,
             ),
             candidate_sources={"vector": "local", "graph": "local", "bm25": "local"},
+            provider_sources={
+                "embedding": _embedding_provider_source(
+                    resolved_embedding_provider,
+                    fallback_provider="mock",
+                ),
+                "reranker": _mock_reranker_source(),
+            },
         )
     elif resolved.backend == "stores":
         # Qdrant and Neo4j constructors do not intentionally perform health checks here.
@@ -155,12 +164,20 @@ def build_runtime_retrieval(
             backend="stores",
             pipeline=OnlineQueryPipeline(
                 documents=runtime_documents,
-                embedding_provider=embedding_provider,
+                embedding_provider=resolved_embedding_provider,
                 vector_store=vector_store,
                 graph_store=graph_store,
                 bm25_store=bm25_store,
             ),
             candidate_sources={"vector": "qdrant", "graph": "neo4j", "bm25": "bm25_index"},
+            provider_sources={
+                "embedding": _embedding_provider_source(
+                    resolved_embedding_provider,
+                    fallback_provider="unknown",
+                    adapter="qdrant",
+                ),
+                "reranker": _mock_reranker_source(),
+            },
         )
 
     raise RuntimeRetrievalError(f"unsupported retrieval backend: {resolved.backend}")
@@ -169,10 +186,16 @@ def build_runtime_retrieval(
 def add_runtime_debug_trace(
     trace: JsonMap,
     candidate_sources: Mapping[str, str],
+    provider_sources: Mapping[str, JsonMap] | None = None,
 ) -> JsonMap:
     labeled = dict(trace)
     source_labels = dict(candidate_sources)
     labeled["candidateSources"] = source_labels
+    if provider_sources is not None:
+        labeled["providerSources"] = {
+            key: dict(value)
+            for key, value in provider_sources.items()
+        }
     for key, source_key in (
         ("vectorCandidates", "vector"),
         ("graphCandidates", "graph"),
@@ -188,6 +211,28 @@ def add_runtime_debug_trace(
             for candidate in labeled.get(key, [])
         ]
     return labeled
+
+
+def _embedding_provider_source(
+    provider: EmbeddingProvider,
+    *,
+    fallback_provider: str,
+    adapter: str | None = None,
+) -> JsonMap:
+    descriptor: JsonMap = {
+        "provider": str(getattr(provider, "provider_kind", None) or fallback_provider),
+        "model": provider.model_name,
+    }
+    if adapter is not None:
+        descriptor["adapter"] = adapter
+    return descriptor
+
+
+def _mock_reranker_source() -> JsonMap:
+    return {
+        "provider": "mock",
+        "model": "BAAI/bge-reranker-v2-m3",
+    }
 
 
 def _resolve_repo_path(value: str) -> Path:

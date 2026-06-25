@@ -276,17 +276,38 @@ def _extract_entities_and_relations(
 
 
 def _write_bm25_index(path: Path, chunks: tuple[ProblemChunk, ...]) -> None:
-    documents = [
-        {
-            "id": chunk.id,
-            "text": chunk.text,
-            "problemId": chunk.problem_id,
-            "tokens": _tokens(chunk.text),
-            "payload": chunk.to_mapping(),
-        }
-        for chunk in chunks
-    ]
+    documents: list[dict[str, Any]] = []
+    for chunk in chunks:
+        search_text = _bm25_search_text(chunk)
+        documents.append(
+            {
+                "id": chunk.id,
+                "text": search_text,
+                "problemId": chunk.problem_id,
+                "tokens": _tokens(search_text),
+                "payload": chunk.to_mapping(),
+            }
+        )
     _write_json(path, {"documents": documents})
+
+
+def _bm25_search_text(chunk: ProblemChunk) -> str:
+    source = chunk.source or str(chunk.metadata.get("source") or "")
+    source_id = chunk.source_id or str(chunk.metadata.get("sourceId") or "")
+    title = chunk.title or str(chunk.metadata.get("title") or "")
+    problem_type = chunk.problem_type or str(chunk.metadata.get("problemType") or "")
+    parts = [
+        chunk.problem_id,
+        source,
+        source_id,
+        f"{source}-{source_id}" if source and source_id else "",
+        f"{source} {source_id}" if source and source_id else "",
+        title,
+        problem_type,
+        " ".join(chunk.concepts),
+        chunk.text,
+    ]
+    return _clean_text(" ".join(part for part in parts if part))
 
 
 def _build_qdrant_vectors(
@@ -336,8 +357,10 @@ def _classify_concept(name: str) -> str:
     lowered = name.lower()
     if lowered in {"bfs", "dfs", "dijkstra", "binary search", "dynamic programming"}:
         return "algorithm"
-    if lowered in {"queue", "stack", "heap", "visited array", "array", "hash map"}:
+    if lowered in {"queue", "stack", "heap", "array", "hash map"}:
         return "data_structure"
+    if lowered in {"visited array", "visited set", "state tracking"}:
+        return "technique"
     return "concept"
 
 

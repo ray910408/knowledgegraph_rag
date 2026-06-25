@@ -103,6 +103,24 @@ API 層的 `POST /api/analysis` 與 `POST /api/v1/analysis` 保留既有 respons
 - `evidenceBundle`
 - `contextPreview`
 
+`AnalysisRequest.mode` selects which retrieval lane contributes final
+candidates:
+
+- `hybrid`: vector, graph, and BM25 feed fusion/rerank.
+- `vector`: vector candidates feed the final list.
+- `graph`: graph candidates feed the final list.
+
+`topK` is passed through to the online pipeline. Top-level `similarProblems`
+are derived from the final selected-mode candidates after exact matched
+problems are filtered out. This keeps `matchedProblem` separate from practice
+recommendations and prevents graph-only queries from displaying unrelated
+fallback examples when graph retrieval has no similar candidates.
+
+BM25 search only contributes positive-score candidates to fusion. The local
+BM25 index includes problem IDs and source IDs as aliases so exact source-id
+queries can match the intended problem instead of giving fusion credit to
+zero-score rows.
+
 ## Runtime Backend Selection
 
 FastAPI reads `RETRIEVAL_BACKEND` at startup:
@@ -146,6 +164,8 @@ Graph store paths keep two shapes:
 `contextPreview` 只在 `debug=true` 時回傳，避免正式 UI 每次暴露完整 prompt context.
 It can include answer, solutionHints, difficulty,
 constraints, and graph path rationale from the enriched candidate payloads.
+Empty evidence sections are omitted from the prompt context, including
+`相似題` when no selected-mode similar problems exist.
 
 ## Provider / Adapter Boundary
 

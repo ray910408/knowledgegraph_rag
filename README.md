@@ -157,6 +157,19 @@ evidenceBundle
 contextPreview
 ```
 
+`/api/analysis` also accepts retrieval controls:
+
+```text
+mode = hybrid | vector | graph
+topK = positive integer
+```
+
+The selected mode controls the final candidate list used by fusion/rerank,
+top-level `similarProblems`, and `contextPreview`. Exact problem matches are
+shown in `matchedProblem`; they are not duplicated as similar problems.
+If a selected mode has no similar candidates, the response and UI omit unrelated
+fallback similar-problem entries.
+
 `contextPreview` 只會在 `debug=true` 時回傳：
 
 ```powershell

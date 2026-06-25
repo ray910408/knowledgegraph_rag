@@ -262,6 +262,10 @@ patternEvidence
 commonMistakes
 ```
 
+`similarProblems` is built from the final selected retrieval mode candidate
+set. Exact matched problems are represented separately as `matchedProblem` and
+are excluded from `similarProblems`.
+
 `graphPaths` entries can include `nodes`, `relations`, `rationale`, and
 `storePath`. `storePath` preserves the raw store-returned nodes and relations
 while `nodes` / `relations` keep the stable display summary.
@@ -273,3 +277,6 @@ while `nodes` / `relations` keep the stable display summary.
 The context builder can use enriched candidate payload fields such as `answer`,
 `solutionHints`, `difficulty`, and `constraints`, plus graph path `rationale`.
 Non-debug responses omit `contextPreview`.
+
+When `similarProblems` is empty, `ContextBuilder` omits the `相似題` section
+instead of emitting an empty heading.

@@ -22,6 +22,8 @@ explainable recommendations than simpler baselines on a fixed dataset.
 ## Controls
 
 - Use the same embedding model and candidate pool for vector-only and hybrid.
+- Ensure `mode=vector`, `mode=graph`, and `mode=hybrid` each restrict final
+  candidates to the selected lane or fusion path before comparing metrics.
 - Keep service-level store-backed retrieval tests comparable with the local
   fallback fixtures, so `VectorStore`, `BM25Store`, and `GraphStore` injection
   can be compared without changing expected answers.

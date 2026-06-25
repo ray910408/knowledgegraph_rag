@@ -44,10 +44,34 @@ export interface EvidencePath {
   edges: EvidenceEdge[];
 }
 
+export interface MatchedProblem {
+  id: string;
+  title: string;
+  source: string;
+  sourceId: string;
+  matchKind: string;
+  confidence: number;
+  score: number;
+  sharedConcepts: string[];
+  problemType: string;
+  answerHint?: string;
+  solutionHints?: string[];
+  difficulty?: string;
+  constraints?: string[];
+}
+
+export interface ProviderDescriptor {
+  provider: string;
+  model: string;
+  adapter?: string;
+}
+
 export interface RetrievalConfig {
   embeddingModel: string;
   rerankerModel: string;
   language: string;
+  embeddingProvider?: ProviderDescriptor;
+  rerankerProvider?: ProviderDescriptor;
 }
 
 export interface TraceCandidate {
@@ -59,6 +83,7 @@ export interface TraceCandidate {
   concepts?: string[];
   problemType?: string;
   payload?: Record<string, unknown>;
+  rawChunks?: TraceCandidate[];
 }
 
 export interface GraphPathTrace {
@@ -67,6 +92,7 @@ export interface GraphPathTrace {
   rationale?: string;
   score?: number;
   storePath?: Record<string, unknown>;
+  pathSource?: "neo4j" | "inferred" | string;
 }
 
 export interface RetrievalTrace {
@@ -84,6 +110,8 @@ export interface RetrievalTrace {
   fusionScores: TraceCandidate[];
   rerankerScores: TraceCandidate[];
   candidateSources?: Record<string, string>;
+  providerSources?: Record<string, ProviderDescriptor>;
+  matchedProblem?: MatchedProblem;
 }
 
 export interface EvidenceBundle {
@@ -92,7 +120,9 @@ export interface EvidenceBundle {
   algorithmEvidence: string[];
   dataStructureEvidence: string[];
   patternEvidence: string[];
+  techniqueEvidence?: string[];
   commonMistakes: string[];
+  matchedProblem?: MatchedProblem;
 }
 
 export interface AnalysisResponse {
@@ -110,4 +140,5 @@ export interface AnalysisResponse {
   retrievalTrace?: RetrievalTrace;
   evidenceBundle?: EvidenceBundle;
   contextPreview?: string;
+  matchedProblem?: MatchedProblem;
 }

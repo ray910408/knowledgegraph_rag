@@ -179,6 +179,7 @@ class RetrievalTrace:
     bm25_candidates: list[JsonMap] = field(default_factory=list)
     fusion_scores: list[JsonMap] = field(default_factory=list)
     reranker_scores: list[JsonMap] = field(default_factory=list)
+    matched_problem: JsonMap | None = None
 
     def to_mapping(self) -> JsonMap:
         return {
@@ -189,6 +190,7 @@ class RetrievalTrace:
             "bm25Candidates": [dict(item) for item in self.bm25_candidates],
             "fusionScores": [dict(item) for item in self.fusion_scores],
             "rerankerScores": [dict(item) for item in self.reranker_scores],
+            "matchedProblem": dict(self.matched_problem) if self.matched_problem is not None else None,
         }
 
 
@@ -199,7 +201,9 @@ class RetrievalEvidenceBundle:
     algorithm_evidence: list[str] = field(default_factory=list)
     data_structure_evidence: list[str] = field(default_factory=list)
     pattern_evidence: list[str] = field(default_factory=list)
+    technique_evidence: list[str] = field(default_factory=list)
     common_mistakes: list[str] = field(default_factory=list)
+    matched_problem: JsonMap | None = None
 
     def to_mapping(self) -> JsonMap:
         return {
@@ -208,5 +212,7 @@ class RetrievalEvidenceBundle:
             "algorithmEvidence": list(self.algorithm_evidence),
             "dataStructureEvidence": list(self.data_structure_evidence),
             "patternEvidence": list(self.pattern_evidence),
+            "techniqueEvidence": list(self.technique_evidence),
             "commonMistakes": list(self.common_mistakes),
+            "matchedProblem": dict(self.matched_problem) if self.matched_problem is not None else None,
         }
