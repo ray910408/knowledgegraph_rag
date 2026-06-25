@@ -501,8 +501,8 @@ def _similar_problem_responses_from_candidates(
 
 def _similar_problem_reason(concepts: Sequence[str]) -> str:
     if concepts:
-        return f"Retrieved by selected mode; shared concepts: {', '.join(concepts)}."
-    return "Retrieved by selected mode as a final reranked candidate."
+        return f"所選檢索模式將此題列為最終候選，並共享這些概念：{'、'.join(concepts)}。"
+    return "所選檢索模式將此題列為最終重排序候選。"
 
 
 def _analysis_problem_text(problem_id: str | None) -> str | None:

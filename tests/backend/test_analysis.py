@@ -519,6 +519,23 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
             "constraints": (),
         },
     )
+    no_concept_similar_candidate = RetrievalCandidate(
+        id="leetcode-2000",
+        title="Reverse Prefix of Word",
+        source="LeetCode",
+        score=0.72,
+        text="Reverse the prefix of a word up to a target character.",
+        concepts=(),
+        problem_type="String",
+        payload={
+            "documentSource": "LeetCode",
+            "sourceId": "2000",
+            "answer": "Find the index and reverse that prefix.",
+            "solutionHints": ("Use slicing.",),
+            "difficulty": "Easy",
+            "constraints": (),
+        },
+    )
     matched_problem = ExactProblemMatch(
         problem_id=matched_candidate.id,
         title=matched_candidate.title,
@@ -557,7 +574,11 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
         graph_candidates=(matched_candidate,),
         bm25_candidates=(matched_candidate,),
         fused_candidates=(matched_candidate,),
-        reranked_candidates=(matched_candidate, similar_candidate),
+        reranked_candidates=(
+            matched_candidate,
+            similar_candidate,
+            no_concept_similar_candidate,
+        ),
         graph_paths=(
             {
                 "nodes": [],
@@ -630,9 +651,13 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
     assert payload["retrievalTrace"]["matchedProblem"]["id"] == "uva-10653"
     assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
     assert all(problem["id"] != "uva-10653" for problem in payload["evidenceBundle"]["similarProblems"])
-    assert [problem["id"] for problem in payload["similarProblems"]] == ["1091"]
+    assert [problem["id"] for problem in payload["similarProblems"]] == ["1091", "2000"]
     assert payload["similarProblems"][0]["source"] == "LeetCode"
     assert payload["similarProblems"][0]["title"] == "Shortest Path in Binary Matrix"
+    assert payload["similarProblems"][0]["reason"] == (
+        "所選檢索模式將此題列為最終候選，並共享這些概念：BFS、Queue、Visited Array。"
+    )
+    assert payload["similarProblems"][1]["reason"] == "所選檢索模式將此題列為最終重排序候選。"
     assert payload["evidencePaths"] == [
         {
             "title": "Graph path 1 (neo4j)",
@@ -742,6 +767,11 @@ def test_analysis_exact_source_id_vector_query_preserves_retrieval_similar_probl
     }
     assert {"uva-10653", "10653"}.isdisjoint(
         {problem["id"] for problem in top_level_similar_problems}
+    )
+    assert all("Retrieved by selected mode" not in problem["reason"] for problem in top_level_similar_problems)
+    assert all(
+        problem["reason"].startswith("所選檢索模式將此題列為最終候選")
+        for problem in top_level_similar_problems
     )
 
 
