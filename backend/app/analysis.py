@@ -106,7 +106,27 @@ def analyze_programming_input(user_input: str) -> AnalysisResult:
     dataset = load_programming_dataset()
     graph_examples = find_graph_traversal_examples(dataset)
     signals = detect_graph_traversal_signals(text)
+    has_supported_graph_signal = has_supported_graph_traversal_signals(text)
     concepts = graph_traversal_concepts()
+
+    if (
+        input_kind == "unknown"
+        and not has_supported_graph_signal
+        and not has_explicit_problem_reference(text, dataset)
+    ):
+        return AnalysisResult(
+            query_id=build_query_id(text, input_kind),
+            used_mock_data=False,
+            input_kind=input_kind,
+            problem_type="不支援的問題",
+            required_concepts=(),
+            similar_problems=(),
+            similarity_reason="This input is outside the supported graph traversal analysis scope.",
+            solving_hints=(),
+            common_mistakes=(),
+            evidence_paths=(),
+            retrieval_config=DEFAULT_RETRIEVAL_CONFIG,
+        )
 
     return AnalysisResult(
         query_id=build_query_id(text, input_kind),
@@ -140,6 +160,48 @@ def find_graph_traversal_examples(
     ]
     examples.sort(key=lambda problem: (problem.source != "UVa", problem.source, problem.source_id))
     return tuple(examples)
+
+
+def has_explicit_problem_reference(
+    text: str,
+    dataset: tuple[ProgrammingProblem, ...],
+) -> bool:
+    normalized = _normalize_problem_reference(text)
+    if not normalized:
+        return False
+    for problem in dataset:
+        exact_aliases = {
+            problem.id,
+            problem.source_id,
+            problem.title,
+            f"{problem.source} {problem.source_id}",
+            f"{problem.source}-{problem.source_id}",
+            f"{problem.source} {problem.source_id} {problem.title}",
+            f"{problem.source}-{problem.source_id} {problem.title}",
+            f"{problem.id} {problem.title}",
+        }
+        normalized_exact_aliases = {
+            _normalize_problem_reference(alias)
+            for alias in exact_aliases
+        }
+        if normalized in normalized_exact_aliases:
+            return True
+        identifier_aliases = {
+            _normalize_problem_reference(problem.id),
+            _normalize_problem_reference(problem.source_id),
+            _normalize_problem_reference(f"{problem.source} {problem.source_id}"),
+            _normalize_problem_reference(f"{problem.source}-{problem.source_id}"),
+        }
+        if any(
+            alias and f" {alias} " in f" {normalized} "
+            for alias in identifier_aliases
+        ):
+            return True
+    return False
+
+
+def _normalize_problem_reference(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
 
 
 def graph_traversal_concepts() -> tuple[RequiredConcept, ...]:
@@ -200,9 +262,18 @@ def detect_input_kind(text: str) -> InputKind:
         return "cpp"
     if any(marker in lowered for marker in python_markers):
         return "python"
-    if detect_graph_traversal_signals(text):
+    if has_supported_graph_traversal_signals(text):
         return "problem"
     return "unknown"
+
+
+def has_supported_graph_traversal_signals(text: str) -> bool:
+    signals = set(detect_graph_traversal_signals(text))
+    if "BFS" in signals or "Unweighted shortest path" in signals:
+        return True
+    if "Graph" in signals and {"Queue", "Visited Array"} & signals:
+        return True
+    return False
 
 
 def detect_graph_traversal_signals(text: str) -> tuple[str, ...]:

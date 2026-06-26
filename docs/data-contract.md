@@ -2,6 +2,13 @@
 
 ## Raw Problem Schema
 
+## Identifier Contract
+
+`id` is the canonical cross-system identifier, for example `leetcode-1091` or
+`uva-10653`. `sourceId` is the source-local identifier, for example `1091` or
+`10653`, when that source provides one. Join records by canonical `id`; retain
+`sourceId` for display and source-specific references.
+
 `data/raw/*.json` 可放單一 object、array，或 `{ "problems": [...] }`。
 
 Repo 內建 `data/raw/programming_problems.json` 作為可執行的 seed fixture。這個檔案必須保持 UTF-8 readable zh-Hant，中文內容不要寫成 `\uXXXX` escape。
@@ -229,6 +236,25 @@ storeCandidateId
 storePayload
 ```
 
+Scores are stage-specific. Candidate and graph-path scores include `scoreMeta`;
+consumers must inspect it before comparing values. In particular, BM25, vector,
+graph path, fusion, and reranker scores are not relevance-comparable merely
+because they are numeric.
+
+Candidate provenance can include:
+
+```text
+chunkEvidence.available
+chunkEvidence.complete
+chunkEvidence.missingSources
+chunkEvidence.unavailableReason
+```
+
+`complete=true` means all contributing retrieval sources supplied usable chunk
+provenance. `missingSources` lists the contributing sources whose provenance is
+absent or incomplete; it is empty only when no source is missing. Consumers
+should not imply complete source evidence when `complete=false`.
+
 Vector and BM25 normalized candidate `payload` values can include enriched
 evidence fields such as `answer`, `solutionHints`, `difficulty`, `constraints`,
 `examples`, `editorial`, `documentSource`, `sourceId`, `title`, `problemType`,
@@ -269,6 +295,14 @@ are excluded from `similarProblems`.
 `graphPaths` entries can include `nodes`, `relations`, `rationale`, and
 `storePath`. `storePath` preserves the raw store-returned nodes and relations
 while `nodes` / `relations` keep the stable display summary.
+
+Graph paths cross a reference boundary with layered nodes (`problem`, `chunk`,
+`concept`, `code_feature`, `pattern`, `source`) and typed, weighted relations.
+Their deterministic scoring uses `pathScoring` with
+`strategy=weighted_layered_path_v1`; graph path `score` equals
+`pathScoring.score`. Relation weights express local edge confidence only and
+are not interchangeable with BM25, vector, fusion, reranker, or graph-path
+retrieval scores.
 
 ## Context Preview Contract
 

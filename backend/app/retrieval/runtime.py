@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
@@ -41,6 +41,7 @@ class RuntimeRetrieval:
     pipeline: OnlineQueryPipeline
     candidate_sources: dict[str, str]
     provider_sources: dict[str, JsonMap]
+    compatibility_warnings: list[JsonMap] = field(default_factory=list)
 
 
 class JsonBM25Store:
@@ -149,6 +150,18 @@ def build_runtime_retrieval(
             url=resolved.qdrant_url,
             collection_name=resolved.qdrant_collection,
         )
+        warnings: list[JsonMap] = []
+        try:
+            warning = getattr(vector_store, "compatibility_warning", None)
+        except Exception:
+            warning = None
+        if callable(warning):
+            try:
+                maybe_warning = warning()
+            except Exception:
+                maybe_warning = None
+            if maybe_warning is not None:
+                warnings.append(maybe_warning)
         graph_store = Neo4jGraphStore(
             uri=resolved.neo4j_uri,
             user=resolved.neo4j_user,
@@ -178,6 +191,7 @@ def build_runtime_retrieval(
                 ),
                 "reranker": _mock_reranker_source(),
             },
+            compatibility_warnings=warnings,
         )
 
     raise RuntimeRetrievalError(f"unsupported retrieval backend: {resolved.backend}")
@@ -187,6 +201,7 @@ def add_runtime_debug_trace(
     trace: JsonMap,
     candidate_sources: Mapping[str, str],
     provider_sources: Mapping[str, JsonMap] | None = None,
+    compatibility_warnings: Sequence[JsonMap] = (),
 ) -> JsonMap:
     labeled = dict(trace)
     source_labels = dict(candidate_sources)
@@ -196,6 +211,10 @@ def add_runtime_debug_trace(
             key: dict(value)
             for key, value in provider_sources.items()
         }
+    labeled["compatibilityWarnings"] = [
+        dict(warning)
+        for warning in compatibility_warnings
+    ]
     for key, source_key in (
         ("vectorCandidates", "vector"),
         ("graphCandidates", "graph"),

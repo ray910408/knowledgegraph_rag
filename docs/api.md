@@ -54,6 +54,17 @@ topK
 
 ### Analysis Response
 
+`status` is an analysis outcome, not an HTTP error indicator:
+
+- `ok` means the backend found a programming problem, submitted-code feature,
+  exact problem, or retrieval evidence that supports analysis.
+- `unsupported` is an intentional abstention. `requiredConcepts`,
+  `similarProblems`, `evidencePaths`, and `evidenceBundle.graphPaths` are empty;
+  `abstentionReason` explains why the input is outside the supported scope.
+
+An oversized input is rejected before analysis with HTTP `413` and a `detail`
+object whose `code` is `input_too_large`.
+
 保留既有欄位：
 
 ```text
@@ -150,6 +161,30 @@ solutionHints, difficulty, constraints, and graphPaths.
 `candidateSource` is only added when `debug=true`. Non-debug responses keep the
 existing `retrievalTrace` shape and omit `retrievalBackend`.
 
+When available, debug traces also include `compatibilityWarnings` for bounded
+store-adapter diagnostics:
+
+```json
+{
+  "compatibilityWarnings": [
+    {
+      "adapter": "qdrant",
+      "severity": "warning",
+      "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range."
+    }
+  ]
+}
+```
+
+This field appears only with `debug=true`. It is diagnostic and non-fatal: a
+compatibility warning does not fail the request or change retrieval behavior.
+
+Debug candidates and graph paths include `scoreMeta`. Its `stage` and
+`displayLabel` identify the scoring stage, and `comparableAcrossStages` states
+whether that score can be compared with another stage. Candidate provenance can
+also include `chunkEvidence` with `available`, `complete`, `missingSources`,
+and `unavailableReason`.
+
 Store-backed vector and BM25 normalized candidate `payload` values can include
 enriched fields such as answer, solutionHints, difficulty, constraints,
 examples, editorial, documentSource, sourceId, title, problemType, and concepts.
@@ -161,6 +196,15 @@ Store-backed graph paths use the same display summary as local graph paths:
 `input -> linked entity -> problem`. When the graph store returns a raw path, the
 raw `nodes` and `relations` are preserved under `storePath`. Graph paths may
 also include a `rationale` used by debug `contextPreview`.
+
+Each graph path identifies how it was produced with `graphPathOperation`:
+`candidate_retrieval` for a retrieved candidate path or `exact_expansion` for
+evidence expanded from an exact problem match. Nodes use the layers `problem`,
+`chunk`, `concept`, `code_feature`, `pattern`, and `source`. Each relation has a
+typed `type` and local-confidence `weight`. `pathScoring` uses
+`strategy=weighted_layered_path_v1` and supplies the path `score` plus its
+`components`; the top-level graph path `score` is the same value as
+`pathScoring.score`.
 
 ### Evidence Bundle
 

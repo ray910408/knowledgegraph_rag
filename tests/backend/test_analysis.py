@@ -5,7 +5,12 @@ from fastapi.testclient import TestClient
 
 from backend.app.analysis import find_graph_traversal_examples, load_programming_dataset
 from backend.app.contracts import RetrievalTrace
-from backend.app.main import AnalysisRequest, _analysis_paths_from_graph_trace, app
+from backend.app.main import (
+    AnalysisRequest,
+    _analysis_paths_from_graph_trace,
+    _similar_problem_responses_from_candidates,
+    app,
+)
 from backend.app.providers import DeterministicMockEmbeddingProvider
 from backend.app.retrieval.pipeline import (
     ExactProblemMatch,
@@ -32,6 +37,37 @@ def _clear_runtime_retrieval() -> None:
         pass
 
 
+def test_similar_problem_responses_keep_source_ids_optional_and_accept_aliases():
+    def candidate(candidate_id: str, payload: dict[str, str]) -> RetrievalCandidate:
+        return RetrievalCandidate(
+            id=candidate_id,
+            title=candidate_id,
+            source="LeetCode",
+            score=0.8,
+            text="BFS shortest path",
+            concepts=("BFS",),
+            problem_type="Graph Traversal",
+            payload=payload,
+        )
+
+    responses = _similar_problem_responses_from_candidates(
+        (
+            candidate("leetcode-matched", {}),
+            candidate("leetcode-source-matched", {"sourceId": "matched-source"}),
+            candidate("leetcode-no-source-id", {}),
+            candidate("leetcode-snake-case-source", {"source_id": "snake-source"}),
+        ),
+        matched_problem_ids={"leetcode-matched", "matched-source"},
+    )
+
+    assert [response.id for response in responses] == [
+        "leetcode-no-source-id",
+        "leetcode-snake-case-source",
+    ]
+    assert responses[0].sourceId is None
+    assert responses[1].sourceId == "snake-source"
+
+
 def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     client = TestClient(app)
 
@@ -49,6 +85,7 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     payload = response.json()
     assert set(payload) == {
         "queryId",
+        "status",
         "usedMockData",
         "inputKind",
         "problemType",
@@ -62,6 +99,7 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
         "retrievalTrace",
         "evidenceBundle",
     }
+    assert payload["status"] == "ok"
     assert payload["usedMockData"] is False
     assert payload["inputKind"] == "problem"
     assert payload["problemType"] == "\u5716\u8ad6\u904d\u6b77\uff08Graph Traversal\uff09"
@@ -77,7 +115,17 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     assert any(problem["source"] == "UVa" for problem in payload["similarProblems"])
     assert any(problem["source"] == "LeetCode" for problem in payload["similarProblems"])
     for problem in payload["similarProblems"]:
-        assert set(problem) == {"source", "id", "title", "reason", "sharedConcepts", "answerHint"}
+        assert set(problem) == {
+            "source",
+            "id",
+            "sourceId",
+            "title",
+            "reason",
+            "sharedConcepts",
+            "answerHint",
+        }
+        assert problem["id"].startswith(("leetcode-", "uva-"))
+        assert problem["sourceId"]
         assert {"BFS", "Queue", "Visited Array"}.issubset(problem["sharedConcepts"])
         assert problem["answerHint"]
 
@@ -87,15 +135,8 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     assert any("visited" in mistake and "\u5fd8\u8a18\u6a19\u8a18" in mistake for mistake in payload["commonMistakes"])
     assert any("queue \u521d\u59cb\u5316\u932f\u8aa4" in mistake for mistake in payload["commonMistakes"])
 
-    evidence = payload["evidencePaths"][0]
-    assert set(evidence) == {"title", "nodes", "edges"}
-    assert evidence["nodes"]
-    assert evidence["edges"]
-    assert {"id", "label", "type"}.issubset(evidence["nodes"][0])
-    assert {"from", "to", "relation", "weight"}.issubset(evidence["edges"][0])
-    relations = {edge["relation"] for edge in evidence["edges"]}
-    assert "\u7b26\u5408\u8f38\u5165\u8a0a\u865f" in relations
-    assert "\u9700\u8981\u89c0\u5ff5" in relations
+    assert payload["evidencePaths"] == []
+    assert payload["evidenceBundle"]["graphPaths"] == []
 
 
 def test_python_code_with_queue_deque_and_visited_is_classified_as_python():
@@ -322,6 +363,142 @@ def test_analysis_debug_mode_uses_configured_runtime_retrieval():
         "model": "BAAI/bge-reranker-v2-m3",
     }
     assert payload["evidenceBundle"]["similarProblems"][0]["id"] == "fake-runtime-bfs"
+
+
+def test_analysis_exposes_compatibility_warnings_only_in_debug_trace(monkeypatch):
+    warning = {
+        "adapter": "qdrant",
+        "severity": "warning",
+        "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+    }
+    monkeypatch.setattr(
+        app.state,
+        "runtime_retrieval",
+        RuntimeRetrieval(
+            backend="stores",
+            pipeline=OnlineQueryPipeline(
+                documents=(
+                    RetrievalDocument(
+                        id="fake-runtime-bfs",
+                        source="FakeJudge",
+                        source_id="runtime-1",
+                        title="Fake Runtime BFS",
+                        text="BFS shortest path with a queue in a graph.",
+                        answer="Use a fake runtime queue answer.",
+                        concepts=("BFS", "Queue"),
+                        problem_type="Graph Traversal",
+                    ),
+                ),
+                embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+            ),
+            candidate_sources={
+                "vector": "fake_vector",
+                "graph": "fake_graph",
+                "bm25": "fake_bm25",
+            },
+            provider_sources={},
+            compatibility_warnings=[warning],
+        ),
+        raising=False,
+    )
+    client = TestClient(app)
+
+    debug_response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "BFS shortest path queue graph traversal"},
+    )
+    normal_response = client.post(
+        "/api/analysis",
+        json={"input": "BFS shortest path queue graph traversal"},
+    )
+
+    assert debug_response.status_code == 200
+    assert debug_response.json()["retrievalTrace"]["compatibilityWarnings"] == [warning]
+    assert normal_response.status_code == 200
+    assert "compatibilityWarnings" not in normal_response.json()["retrievalTrace"]
+
+
+def test_analysis_uses_only_canonical_graph_paths_for_top_level_evidence():
+    candidate = RetrievalCandidate(
+        id="fake-runtime-bfs",
+        title="Fake Runtime BFS",
+        source="vector",
+        score=0.91,
+        text="BFS shortest path with a queue in a graph.",
+        concepts=("BFS", "Queue"),
+        problem_type="Graph Traversal",
+        payload={
+            "documentSource": "FakeJudge",
+            "sourceId": "runtime-1",
+            "answer": "Use a fake runtime queue answer.",
+        },
+    )
+    expected_result = OnlineQueryResult(
+        query_understanding=QueryUnderstanding(
+            original_query="BFS shortest path with queue",
+            normalized_query="BFS shortest path with queue",
+            input_kind="problem",
+            intent="problem_search",
+            keywords=("bfs", "shortest", "path", "queue"),
+        ),
+        linked_entities=(),
+        matched_problem=None,
+        vector_candidates=(candidate,),
+        graph_candidates=(),
+        bm25_candidates=(),
+        fused_candidates=(candidate,),
+        reranked_candidates=(candidate,),
+        graph_paths=(),
+        trace=RetrievalTrace(
+            query_understanding={
+                "originalQuery": "BFS shortest path with queue",
+                "normalizedQuery": "BFS shortest path with queue",
+                "inputKind": "problem",
+                "intent": "problem_search",
+                "keywords": ["bfs", "shortest", "path", "queue"],
+            },
+            vector_candidates=[candidate.to_mapping()],
+            fusion_scores=[candidate.to_mapping()],
+            reranker_scores=[candidate.to_mapping()],
+        ),
+    )
+
+    class FusedCandidateNoGraphPathPipeline:
+        def run(
+            self,
+            query: str,
+            *,
+            mode: str = "hybrid",
+            top_k: int = 5,
+        ) -> OnlineQueryResult:
+            assert query == "BFS shortest path with queue"
+            assert mode == "hybrid"
+            assert top_k == 5
+            return expected_result
+
+    app.state.runtime_retrieval = RuntimeRetrieval(
+        backend="stores",
+        pipeline=FusedCandidateNoGraphPathPipeline(),  # type: ignore[arg-type]
+        candidate_sources={
+            "vector": "fake_vector",
+            "graph": "fake_graph",
+            "bm25": "fake_bm25",
+        },
+        provider_sources={},
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "BFS shortest path with queue"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["evidenceBundle"]["similarProblems"][0]["id"] == "fake-runtime-bfs"
+    assert payload["evidenceBundle"]["graphPaths"] == []
+    assert payload["evidencePaths"] == []
 
 
 def test_analysis_paths_skip_non_mapping_items_and_convert_later_valid_paths():
@@ -651,7 +828,11 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
     assert payload["retrievalTrace"]["matchedProblem"]["id"] == "uva-10653"
     assert payload["evidenceBundle"]["matchedProblem"]["id"] == "uva-10653"
     assert all(problem["id"] != "uva-10653" for problem in payload["evidenceBundle"]["similarProblems"])
-    assert [problem["id"] for problem in payload["similarProblems"]] == ["1091", "2000"]
+    assert [problem["id"] for problem in payload["similarProblems"]] == [
+        "leetcode-1091",
+        "leetcode-2000",
+    ]
+    assert [problem["sourceId"] for problem in payload["similarProblems"]] == ["1091", "2000"]
     assert payload["similarProblems"][0]["source"] == "LeetCode"
     assert payload["similarProblems"][0]["title"] == "Shortest Path in Binary Matrix"
     assert payload["similarProblems"][0]["reason"] == (
@@ -741,8 +922,54 @@ def test_analysis_exact_problem_query_exposes_consistent_matched_problem():
     top_level_similar_problem_ids = [
         problem["id"] for problem in payload["similarProblems"]
     ]
-    assert top_level_similar_problem_ids == ["1091", "994"]
+    assert top_level_similar_problem_ids == ["leetcode-1091", "leetcode-994"]
+    assert [problem["sourceId"] for problem in payload["similarProblems"]] == ["1091", "994"]
     assert {"uva-10653", "10653"}.isdisjoint(top_level_similar_problem_ids)
+
+
+def test_analysis_uses_canonical_problem_ids_across_response_surfaces():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={
+            "input": "UVA-10653 - Bombs! NO they are Mines!!",
+            "mode": "hybrid",
+            "topK": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    top_level_similar_problems = payload["similarProblems"]
+    canonical_prefixes = ("leetcode-", "uva-")
+
+    def canonical_ids(records, *, id_key: str):
+        ids = {str(record[id_key]) for record in records if record.get(id_key)}
+        assert ids
+        assert all(problem_id.startswith(canonical_prefixes) for problem_id in ids)
+        return ids
+
+    top_level_ids = canonical_ids(top_level_similar_problems, id_key="id")
+
+    assert all("sourceId" in problem for problem in top_level_similar_problems)
+    assert {problem["sourceId"] for problem in top_level_similar_problems} == {"1091", "994"}
+    assert {"uva-10653", "10653"}.isdisjoint(top_level_ids)
+
+    evidence_ids = canonical_ids(
+        payload["evidenceBundle"]["similarProblems"],
+        id_key="id",
+    )
+    reranker_ids = canonical_ids(
+        payload["retrievalTrace"]["rerankerScores"],
+        id_key="id",
+    )
+    assert {"10653", "1091", "994"}.isdisjoint(evidence_ids | reranker_ids)
+    assert top_level_ids == evidence_ids
+    assert top_level_ids < reranker_ids
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert "uva-10653" not in evidence_ids
+    assert "uva-10653" in reranker_ids
 
 
 def test_analysis_exact_source_id_vector_query_preserves_retrieval_similar_problems():
@@ -762,9 +989,10 @@ def test_analysis_exact_source_id_vector_query_preserves_retrieval_similar_probl
         (problem["source"], problem["id"], problem["title"])
         for problem in top_level_similar_problems
     } == {
-        ("LeetCode", "1091", "Shortest Path in Binary Matrix"),
-        ("LeetCode", "994", "Rotting Oranges"),
+        ("LeetCode", "leetcode-1091", "Shortest Path in Binary Matrix"),
+        ("LeetCode", "leetcode-994", "Rotting Oranges"),
     }
+    assert {problem["sourceId"] for problem in top_level_similar_problems} == {"1091", "994"}
     assert {"uva-10653", "10653"}.isdisjoint(
         {problem["id"] for problem in top_level_similar_problems}
     )
@@ -781,6 +1009,169 @@ def test_analysis_unknown_explicit_problem_id_returns_404():
     response = client.post("/api/analysis", json={"problemId": "leetcode-404"})
 
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "input_text",
+    [
+        "I ate rotting oranges for breakfast.",
+        "I ate oranges for dinner and want weather",
+    ],
+)
+def test_analysis_unknown_unrelated_input_abstains_without_graph_or_bfs_evidence(input_text: str):
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={
+            "input": input_text,
+            "mode": "hybrid",
+            "topK": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "unsupported"
+    assert payload["inputKind"] == "unknown"
+    assert payload["problemType"] == ""
+    assert payload["similarityReason"] == ""
+    assert (
+        payload["abstentionReason"]
+        == "No programming problem, code, concept, or retrieval evidence was detected."
+    )
+    assert payload["requiredConcepts"] == []
+    assert payload["similarProblems"] == []
+    assert payload["solvingHints"] == []
+    assert payload["commonMistakes"] == []
+    assert payload["evidencePaths"] == []
+    assert payload["evidenceBundle"]["graphPaths"] == []
+    assert payload["evidenceBundle"]["similarProblems"] == []
+    assert payload["evidenceBundle"]["algorithmEvidence"] == []
+    assert payload["evidenceBundle"]["dataStructureEvidence"] == []
+    assert payload["evidenceBundle"]["patternEvidence"] == []
+    assert payload["evidenceBundle"]["techniqueEvidence"] == []
+    assert payload["evidenceBundle"]["commonMistakes"] == []
+    assert payload["matchedProblem"] is None
+    assert payload["retrievalTrace"]["entityLinking"] == []
+    assert payload["retrievalTrace"]["vectorCandidates"] == []
+    assert payload["retrievalTrace"]["graphCandidates"] == []
+    assert payload["retrievalTrace"]["bm25Candidates"] == []
+    assert payload["retrievalTrace"]["fusionScores"] == []
+    assert payload["retrievalTrace"]["rerankerScores"] == []
+    assert "BFS" not in response.text
+
+
+@pytest.mark.parametrize(
+    "input_text",
+    [
+        "queue lunch",
+        "deque dinner",
+        "I saw a queue at lunch",
+        "the node at the edge of the restaurant was busy",
+    ],
+)
+def test_analysis_weak_traversal_vocabulary_still_abstains(input_text: str):
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={
+            "input": input_text,
+            "mode": "hybrid",
+            "topK": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "unsupported"
+    assert payload["inputKind"] == "unknown"
+    assert payload["requiredConcepts"] == []
+    assert payload["similarProblems"] == []
+    assert payload["evidencePaths"] == []
+    assert payload["evidenceBundle"]["graphPaths"] == []
+    assert payload["matchedProblem"] is None
+    assert "BFS" not in response.text
+
+
+def test_analysis_recognized_unsupported_concept_abstains_consistently():
+    client = TestClient(app)
+
+    response = client.post("/api/analysis?debug=true", json={"input": "dynamic programming"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "unsupported"
+    assert payload["inputKind"] == "unknown"
+    assert payload["problemType"] == ""
+    assert payload["similarityReason"] == ""
+    assert payload["abstentionReason"] == "This input is outside the supported graph traversal analysis scope."
+    assert payload["requiredConcepts"] == []
+    assert payload["similarProblems"] == []
+    assert payload["matchedProblem"] is None
+    assert payload["retrievalTrace"]["entityLinking"] == []
+    assert payload["retrievalTrace"]["vectorCandidates"] == []
+    assert payload["retrievalTrace"]["fusionScores"] == []
+    assert payload["evidenceBundle"]["similarProblems"] == []
+
+
+def test_analysis_supported_framed_problem_reference_keeps_supported_fields():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "please analyze UVA-10653 - Bombs! NO they are Mines!!"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["matchedProblem"]["id"] == "uva-10653"
+    assert payload["requiredConcepts"]
+    assert payload["problemType"] == "圖論遍歷（Graph Traversal）"
+    assert payload["problemType"] != "不支援的問題"
+
+
+@pytest.mark.parametrize(
+    "input_text",
+    ["please analyze UVA-10653", "please analyze 10653"],
+)
+def test_analysis_wrapped_known_problem_id_keeps_supported_fields(input_text: str):
+    client = TestClient(app)
+
+    response = client.post("/api/analysis", json={"input": input_text})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["inputKind"] == "problem"
+    assert payload["requiredConcepts"]
+    assert payload["problemType"] != "不支援的問題"
+
+
+@pytest.mark.parametrize("route", ["/api/analysis", "/api/v1/analysis"])
+def test_analysis_rejects_oversized_input_with_structured_limit_response(route: str):
+    client = TestClient(app)
+    oversized = " " * 9001
+
+    response = client.post(f"{route}?debug=true", json={"input": oversized})
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == {
+        "code": "input_too_large",
+        "maxLength": 8000,
+        "actualLength": 9001,
+    }
+
+
+def test_analysis_openapi_documents_input_limit_response():
+    client = TestClient(app)
+
+    openapi = client.get("/openapi.json").json()
+
+    assert "413" in openapi["paths"]["/api/analysis"]["post"]["responses"]
+    assert "413" in openapi["paths"]["/api/v1/analysis"]["post"]["responses"]
 
 
 def test_dataset_loader_contains_clean_traditional_chinese_answers_and_hints():

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import math
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal, Sequence
 
 from ..analysis import detect_input_kind, load_programming_dataset
-from ..contracts import RetrievalEvidenceBundle, RetrievalTrace
+from ..contracts import RetrievalEvidenceBundle, RetrievalTrace, ScoreMetadata
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
 from ..stores import BM25Store, GraphStore, SearchCandidate, VectorStore
 
@@ -16,6 +17,93 @@ JsonMap = dict[str, Any]
 RetrievalMode = Literal["hybrid", "vector", "graph"]
 _MAX_STORE_FETCH_ATTEMPTS = 4
 _MAX_STORE_FETCH_WINDOW = 100
+_GRAPH_PATH_SCORING_STRATEGY = "weighted_layered_path_v1"
+_ALLOWED_GRAPH_NODE_LAYERS = frozenset(
+    {"problem", "chunk", "concept", "code_feature", "pattern", "source"}
+)
+_ALLOWED_GRAPH_RELATION_TYPES = frozenset(
+    {
+        "HAS_SECTION",
+        "DERIVED_FROM_SOURCE",
+        "MENTIONS_CONCEPT",
+        "HAS_CODE_FEATURE",
+        "USES_DATA_STRUCTURE",
+        "IMPLEMENTS_PATTERN",
+        "SIMILAR_BY_FEATURE",
+        "EXPANDED_FROM_EXACT_MATCH",
+    }
+)
+_CODE_FEATURE_ORDER = ("bfs", "queue_frontier", "visited_state", "grid_traversal")
+_CODE_FEATURE_TOKEN_MARKERS = frozenset(
+    {
+        "bfs",
+        "breadth",
+        "queue",
+        "deque",
+        "popleft",
+        "frontier",
+        "visited",
+        "vis",
+        "seen",
+        "set",
+        "grid",
+        "matrix",
+        "directions",
+        "neighbors",
+    }
+)
+_CODE_FEATURE_MARKERS = {
+    "bfs": ("bfs", "breadth"),
+    "queue_frontier": ("queue", "deque", "frontier", "popleft", ".front()", "q.front"),
+    "visited_state": ("visited", "vis", "seen"),
+    "grid_traversal": (
+        "grid",
+        "matrix",
+        "vector<vector",
+        "len(grid)",
+        "directions",
+        "neighbors",
+    ),
+}
+_CODE_FEATURE_ENTITY_MAP = {
+    "bfs": {
+        "entityId": "concept:bfs",
+        "name": "BFS",
+        "type": "algorithm",
+    },
+    "queue_frontier": {
+        "entityId": "concept:queue",
+        "name": "Queue",
+        "type": "data_structure",
+    },
+    "visited_state": {
+        "entityId": "concept:visited-array",
+        "name": "Visited Array",
+        "type": "technique",
+    },
+    "grid_traversal": {
+        "entityId": "pattern:graph-traversal",
+        "name": "Grid Traversal",
+        "type": "pattern",
+    },
+}
+_CODE_TRAVERSAL_CONTEXT_MARKERS = (
+    "bfs",
+    "breadth",
+    "shortest",
+    "grid",
+    "matrix",
+    "vector<vector",
+    "len(grid)",
+    "directions",
+    "neighbors",
+)
+_CODE_FEATURE_COMPATIBILITY_TERMS = {
+    "bfs": ("bfs", "breadth first", "breadth-first"),
+    "queue_frontier": ("queue", "deque", "frontier"),
+    "visited_state": ("visited array", "visited set", "state tracking", "visited"),
+    "grid_traversal": ("grid traversal", "graph traversal", "grid", "matrix"),
+}
 
 
 @dataclass(frozen=True)
@@ -37,21 +125,37 @@ class RetrievalDocument:
 
 
 @dataclass(frozen=True)
+class CodeFeatures:
+    language: str
+    features: tuple[str, ...]
+
+    def to_mapping(self) -> JsonMap:
+        return {
+            "language": self.language,
+            "features": list(self.features),
+        }
+
+
+@dataclass(frozen=True)
 class QueryUnderstanding:
     original_query: str
     normalized_query: str
     input_kind: str
     intent: str
     keywords: tuple[str, ...]
+    code_features: CodeFeatures | None = None
 
     def to_mapping(self) -> JsonMap:
-        return {
+        mapping = {
             "originalQuery": self.original_query,
             "normalizedQuery": self.normalized_query,
             "inputKind": self.input_kind,
             "intent": self.intent,
             "keywords": list(self.keywords),
         }
+        if self.code_features is not None:
+            mapping["codeFeatures"] = self.code_features.to_mapping()
+        return mapping
 
 
 @dataclass(frozen=True)
@@ -149,13 +253,75 @@ class QueryUnderstandingService:
         if exact_match and (exact_match.match_kind != "partial_title" or input_kind not in {"cpp", "python"}):
             input_kind = "problem"
         intent = "code_analysis" if input_kind in {"cpp", "python"} else "problem_search"
+        code_features: CodeFeatures | None = None
+        if input_kind in {"cpp", "python"}:
+            code_features = CodeFeatureExtractor().extract(query, input_kind=input_kind)
+            feature_keywords = tuple(
+                feature.replace("_", " ")
+                for feature in code_features.features
+            )
+            keywords = tuple(dict.fromkeys((*keywords, *feature_keywords)))
         return QueryUnderstanding(
             original_query=query,
             normalized_query=normalized,
             input_kind=input_kind,
             intent=intent,
             keywords=keywords,
+            code_features=code_features,
         )
+
+
+class CodeFeatureExtractor:
+    def extract(
+        self,
+        snippet: str,
+        *,
+        input_kind: str | None = None,
+        language: str | None = None,
+    ) -> CodeFeatures:
+        resolved_language = input_kind or language or "unknown"
+        lowered = snippet.lower()
+        tokens = set(_tokens(lowered))
+        has_traversal_context = self._has_any_marker(
+            lowered,
+            tokens,
+            _CODE_TRAVERSAL_CONTEXT_MARKERS,
+        )
+        if not has_traversal_context:
+            return CodeFeatures(language=resolved_language, features=())
+
+        detected = {
+            feature
+            for feature in _CODE_FEATURE_ORDER
+            if self._has_any_marker(lowered, tokens, _CODE_FEATURE_MARKERS[feature])
+        }
+        has_frontier = "queue_frontier" in detected
+        if has_frontier and (
+            "bfs" in detected
+            or self._has_any_marker(lowered, tokens, ("shortest", "grid", "matrix", "vector<vector"))
+        ):
+            detected.add("bfs")
+        elif "bfs" not in detected:
+            detected.discard("queue_frontier")
+        if "visited_state" in detected and not (has_frontier or "bfs" in detected):
+            detected.discard("visited_state")
+        features = tuple(feature for feature in _CODE_FEATURE_ORDER if feature in detected)
+        return CodeFeatures(language=resolved_language, features=features)
+
+    @staticmethod
+    def _has_any_marker(
+        lowered: str,
+        tokens: set[str],
+        markers: Sequence[str],
+    ) -> bool:
+        for marker in markers:
+            if marker in _CODE_FEATURE_TOKEN_MARKERS:
+                if marker in tokens:
+                    return True
+                continue
+            if marker in lowered:
+                return True
+        return False
 
 
 class ExactProblemMatcher:
@@ -255,27 +421,61 @@ class EntityLinkingService:
         text = understanding.normalized_query.lower()
         linked: list[JsonMap] = []
         if matched_problem is not None:
-            linked.append(
+            self._append_linked(
+                linked,
                 {
                     "entityId": matched_problem.problem_id,
                     "name": matched_problem.title,
                     "type": "problem",
                     "confidence": matched_problem.confidence,
                     "matchKind": matched_problem.match_kind,
-                }
+                },
             )
+        if understanding.code_features is not None:
+            for feature in understanding.code_features.features:
+                entity = _CODE_FEATURE_ENTITY_MAP.get(feature)
+                if entity is None:
+                    continue
+                self._append_linked(
+                    linked,
+                    {
+                        **entity,
+                        "confidence": 1.0,
+                        "matchedBy": "code_feature",
+                        "codeFeatureNodeId": f"code_feature:{feature}",
+                    },
+                )
         for entity_id, name, kind in self._concept_aliases:
             terms = _tokens(name)
             if any(term in understanding.keywords for term in terms) or name.lower() in text:
-                linked.append(
+                self._append_linked(
+                    linked,
                     {
                         "entityId": entity_id,
                         "name": name,
                         "type": kind,
                         "confidence": 1.0,
-                    }
+                    },
                 )
         return tuple(linked)
+
+    @staticmethod
+    def _append_linked(linked: list[JsonMap], entity: JsonMap) -> None:
+        for existing in linked:
+            if existing.get("entityId") != entity.get("entityId"):
+                continue
+            existing["confidence"] = max(
+                float(existing.get("confidence", 0.0)),
+                float(entity.get("confidence", 0.0)),
+            )
+            for key in ("name", "type", "matchKind"):
+                if key in entity and not existing.get(key):
+                    existing[key] = entity[key]
+            if entity.get("matchedBy") == "code_feature":
+                existing["matchedBy"] = "code_feature"
+                existing["codeFeatureNodeId"] = entity["codeFeatureNodeId"]
+            return
+        linked.append(dict(entity))
 
 
 class VectorSearchService:
@@ -412,13 +612,15 @@ class GraphSearchService:
             candidates.append(_candidate_from_document(document, source="graph", score=score))
             for match in matched:
                 paths.append(
-                    {
-                        "nodes": ["input", match["entityId"], document.id],
-                        "relations": ["MENTIONS", "REQUIRED_BY"],
-                        "score": round(score, 6),
-                        "rationale": f"linked {match['name']} to {document.title}",
-                        "pathSource": "inferred",
-                    }
+                    _canonical_graph_path(
+                        document,
+                        target_node=str(match["entityId"]),
+                        target_label=str(match["name"]),
+                        path_source="inferred",
+                        operation="candidate_retrieval",
+                        edge_weight=score,
+                        rationale=f"linked {match['name']} to {document.title}",
+                    )
                 )
         return GraphSearchResult(
             candidates=tuple(sorted(candidates, key=lambda item: (-item.score, item.id))[:top_k]),
@@ -449,7 +651,7 @@ class GraphSearchService:
                         )
                     )
                 inferred_paths_by_target = {
-                    str(path["nodes"][-1]): path
+                    _graph_path_target_id(path): path
                     for path in _inferred_problem_paths(document)
                 }
                 for target_node, target_name in target_nodes:
@@ -511,11 +713,7 @@ class GraphSearchService:
 
             if not document_paths_by_entity:
                 continue
-            per_entity_scores = [
-                max(float(path.get("score", 0.0)) for path in entity_paths)
-                for entity_paths in document_paths_by_entity.values()
-            ]
-            score = min(sum(per_entity_scores) / linked_entity_count, 1.0)
+            score = min(len(document_paths_by_entity) / linked_entity_count, 1.0)
             candidates.append(_candidate_from_document(document, source="graph", score=score))
 
         return GraphSearchResult(
@@ -535,6 +733,88 @@ class GraphSearchService:
             ),
             None,
         )
+
+
+def _chunk_identity(chunk: JsonMap) -> str:
+    payload = _mapping(chunk.get("payload"))
+    store_candidate_id = payload.get("storeCandidateId") or payload.get("store_candidate_id")
+    if store_candidate_id:
+        return f"store:{store_candidate_id}"
+
+    chunk_id = chunk.get("id")
+    title = chunk.get("title")
+    if chunk_id or title:
+        return f"chunk:{chunk_id or ''}:{title or ''}"
+
+    return f"serialized:{json.dumps(chunk, sort_keys=True, default=str)}"
+
+
+def _raw_chunks_for_candidate(candidate: RetrievalCandidate) -> list[JsonMap]:
+    if "rawChunks" in candidate.payload:
+        raw_chunks = candidate.payload["rawChunks"]
+    elif "raw_chunks" in candidate.payload:
+        raw_chunks = candidate.payload["raw_chunks"]
+    else:
+        raw_chunks = None
+
+    if isinstance(raw_chunks, (list, tuple)) and raw_chunks:
+        return [deepcopy(chunk) for chunk in raw_chunks if isinstance(chunk, dict)]
+
+    return [deepcopy(candidate.to_mapping())]
+
+
+def _score_meta(stage: str) -> JsonMap:
+    labels = {
+        "vector": "Vector similarity",
+        "graph": "Graph match",
+        "bm25": "BM25 lexical score",
+        "fusion": "Hybrid fusion score",
+        "reranker": "Reranker score",
+        "graph_path": "Graph path confidence",
+    }
+    return ScoreMetadata(
+        stage=stage,
+        display_label=labels.get(stage, "Retrieval score"),
+    ).to_mapping()
+
+
+def _candidate_mapping(candidate: RetrievalCandidate, *, stage: str) -> JsonMap:
+    mapping = candidate.to_mapping()
+    mapping["scoreMeta"] = _score_meta(stage)
+    return mapping
+
+
+def _chunk_evidence(
+    sources: Sequence[str],
+    raw_chunks: Sequence[JsonMap],
+    complete_by_source: JsonMap,
+) -> JsonMap:
+    chunk_sources = {
+        str(chunk.get("source") or chunk.get("candidateSource") or "")
+        for chunk in raw_chunks
+    }
+    missing_sources = [
+        source
+        for source in sources
+        if source in {"vector", "bm25"} and source not in chunk_sources
+    ]
+    available = len(raw_chunks) > 0
+    complete = available and not missing_sources and all(
+        bool(complete_by_source.get(source, True))
+        for source in sources
+    )
+    unavailable_reason = ""
+    if not available:
+        unavailable_reason = "raw chunks unavailable"
+    elif missing_sources:
+        unavailable_reason = "raw chunks incomplete"
+
+    return {
+        "available": available,
+        "complete": complete,
+        "missingSources": missing_sources,
+        "unavailableReason": unavailable_reason,
+    }
 
 
 class HybridFusionService:
@@ -557,6 +837,9 @@ class HybridFusionService:
         by_id: dict[str, RetrievalCandidate] = {}
         scores: dict[str, float] = defaultdict_float()
         sources: dict[str, set[str]] = {}
+        raw_chunks_by_id: dict[str, list[JsonMap]] = {}
+        raw_chunk_identities: dict[str, set[str]] = {}
+        complete_by_source: dict[str, dict[str, bool]] = {}
         for source, candidates in groups.items():
             best_by_id: dict[str, RetrievalCandidate] = {}
             for candidate in candidates:
@@ -572,12 +855,34 @@ class HybridFusionService:
                     self._weights[source] * (candidate.score / max_score)
                 )
                 sources.setdefault(candidate.id, set()).add(source)
+                complete_by_source.setdefault(candidate.id, {})[source] = bool(
+                    candidate.payload.get("rawChunksComplete", True)
+                )
+                raw_chunks = raw_chunks_by_id.setdefault(candidate.id, [])
+                seen = raw_chunk_identities.setdefault(candidate.id, set())
+                for chunk in _raw_chunks_for_candidate(candidate):
+                    chunk.setdefault("source", source)
+                    identity = _chunk_identity(chunk)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    raw_chunks.append(chunk)
 
         fused: list[RetrievalCandidate] = []
         for candidate_id, candidate in by_id.items():
             ordered_sources = sorted(sources[candidate_id], key=self._source_order.get)
             payload = dict(candidate.payload)
+            raw_chunks = raw_chunks_by_id.get(candidate_id, [])
             payload["sources"] = ordered_sources
+            payload["rawChunks"] = deepcopy(raw_chunks)
+            payload["chunkCount"] = len(raw_chunks)
+            chunk_evidence = _chunk_evidence(
+                ordered_sources,
+                raw_chunks,
+                complete_by_source.get(candidate_id, {}),
+            )
+            payload["rawChunksComplete"] = chunk_evidence["complete"]
+            payload["chunkEvidence"] = chunk_evidence
             fused.append(
                 replace(
                     candidate,
@@ -596,6 +901,7 @@ class Reranker:
         candidates: Sequence[RetrievalCandidate],
         *,
         top_k: int,
+        query_understanding: QueryUnderstanding | None = None,
     ) -> tuple[RetrievalCandidate, ...]:
         query_terms = set(_tokens(query))
         reranked: list[RetrievalCandidate] = []
@@ -604,9 +910,23 @@ class Reranker:
                 _tokens(f"{candidate.title} {candidate.text} {' '.join(candidate.concepts)}")
             )
             lexical = len(query_terms & candidate_terms) / max(len(query_terms), 1)
-            reranker_score = round((0.7 * lexical) + (0.3 * candidate.score), 6)
+            compatibility = _code_feature_compatibility(query_understanding, candidate)
+            if query_understanding is not None and query_understanding.code_features is not None:
+                reranker_score = round(
+                    min(
+                        (0.55 * lexical)
+                        + (0.25 * candidate.score)
+                        + (0.20 * compatibility),
+                        1.0,
+                    ),
+                    6,
+                )
+            else:
+                reranker_score = round((0.7 * lexical) + (0.3 * candidate.score), 6)
             payload = dict(candidate.payload)
             payload["rerankerScore"] = reranker_score
+            if query_understanding is not None and query_understanding.code_features is not None:
+                payload["codeFeatureCompatibility"] = compatibility
             reranked.append(replace(candidate, score=reranker_score, payload=payload))
         return tuple(sorted(reranked, key=lambda item: (-item.score, item.id))[:top_k])
 
@@ -717,8 +1037,11 @@ class ContextBuilder:
                     lines.append(f"  限制: {', '.join(problem['constraints'])}")
         lines.extend(["", "圖路徑"])
         for path in evidence["graphPaths"]:
-            nodes = [str(node) for node in path.get("nodes", [])]
-            relations = [str(relation) for relation in path.get("relations", [])]
+            nodes = [_graph_path_node_label(node) for node in path.get("nodes", [])]
+            relations = [
+                _graph_path_relation_label(relation)
+                for relation in path.get("relations", [])
+            ]
             rationale = str(path.get("rationale", ""))
             lines.append(
                 f"- {' -> '.join(nodes)} "
@@ -808,15 +1131,35 @@ class OnlineQueryPipeline:
             **fusion_inputs,
             top_k=max(top_k * 2, top_k),
         )
-        reranked = Reranker().rerank(understanding.normalized_query, fused, top_k=top_k)
+        reranked = Reranker().rerank(
+            understanding.normalized_query,
+            fused,
+            top_k=top_k,
+            query_understanding=understanding,
+        )
         trace = RetrievalTrace(
             query_understanding=understanding.to_mapping(),
             entity_linking=[dict(entity) for entity in linked_entities],
-            vector_candidates=[candidate.to_mapping() for candidate in vector_candidates],
-            graph_candidates=[candidate.to_mapping() for candidate in graph_result.candidates],
-            bm25_candidates=[candidate.to_mapping() for candidate in bm25_candidates],
-            fusion_scores=[candidate.to_mapping() for candidate in fused],
-            reranker_scores=[candidate.to_mapping() for candidate in reranked],
+            vector_candidates=[
+                _candidate_mapping(candidate, stage="vector")
+                for candidate in vector_candidates
+            ],
+            graph_candidates=[
+                _candidate_mapping(candidate, stage="graph")
+                for candidate in graph_result.candidates
+            ],
+            bm25_candidates=[
+                _candidate_mapping(candidate, stage="bm25")
+                for candidate in bm25_candidates
+            ],
+            fusion_scores=[
+                _candidate_mapping(candidate, stage="fusion")
+                for candidate in fused
+            ],
+            reranker_scores=[
+                _candidate_mapping(candidate, stage="reranker")
+                for candidate in reranked
+            ],
             matched_problem=matched_problem.to_mapping() if matched_problem is not None else None,
         )
         return OnlineQueryResult(
@@ -839,6 +1182,27 @@ def _candidate_from_document(
     source: str,
     score: float,
 ) -> RetrievalCandidate:
+    payload = _candidate_evidence_payload(
+        base_payload={},
+        metadata={},
+        fallback=document,
+    )
+    if source == "exact":
+        raw_chunks = _exact_document_chunks(document)
+        payload.update(
+            {
+                "sources": ["exact"],
+                "rawChunks": raw_chunks,
+                "chunkCount": len(raw_chunks),
+                "rawChunksComplete": True,
+                "chunkEvidence": _chunk_evidence(
+                    ("exact",),
+                    raw_chunks,
+                    {"exact": True},
+                ),
+            }
+        )
+
     return RetrievalCandidate(
         id=document.id,
         title=document.title,
@@ -847,12 +1211,43 @@ def _candidate_from_document(
         text=document.text,
         concepts=document.concepts,
         problem_type=document.problem_type,
-        payload=_candidate_evidence_payload(
-            base_payload={},
-            metadata={},
-            fallback=document,
-        ),
+        payload=payload,
     )
+
+
+def _exact_document_chunks(document: RetrievalDocument) -> list[JsonMap]:
+    chunks: list[JsonMap] = []
+
+    def append_chunk(kind: str, store_candidate_id: str, text: str) -> None:
+        if not text:
+            return
+        chunks.append(
+            {
+                "id": store_candidate_id,
+                "title": document.title,
+                "source": "exact",
+                "score": 1.0,
+                "concepts": list(document.concepts),
+                "problemType": document.problem_type,
+                "payload": {
+                    "storeCandidateId": store_candidate_id,
+                    "kind": kind,
+                    "text": text,
+                    "documentSource": document.source,
+                    "sourceId": document.source_id,
+                    "title": document.title,
+                    "problemType": document.problem_type,
+                    "concepts": list(document.concepts),
+                },
+            }
+        )
+
+    append_chunk("statement", f"{document.id}:statement:0", document.text)
+    append_chunk("answer", f"{document.id}:answer:0", document.answer)
+    for index, hint in enumerate(document.solution_hints, start=1):
+        append_chunk("hint", f"{document.id}:hint:{index}", hint)
+
+    return chunks
 
 
 def _candidate_from_store_candidate(
@@ -1044,33 +1439,35 @@ def _normalize_graph_store_path(
     entity_name = str(entity.get("name", entity_id))
     raw_nodes = _list_or_tuple_of_str(path.get("nodes"))
     raw_relations = _list_or_tuple_of_str(path.get("relations"))
+    raw_score = _clamp_graph_weight(path.get("score", 0.0))
     is_exact_problem_path = source_node is not None and target_node is not None
     if is_exact_problem_path:
-        nodes = ["input", source_node, target_node]
-        relations = [
-            "EXACT_MATCH",
-            raw_relations[-1] if raw_relations else "RELATED_TO",
-        ]
+        public_target_node = target_node
+        operation = "exact_expansion"
         rationale = (
             f"Neo4j returned a path from {document.title} "
             f"to {entity_name}."
         )
     else:
-        nodes = ["input", entity_id, document.id]
-        relations = ["MENTIONS", "REQUIRED_BY"]
+        public_target_node = entity_id
+        operation = "candidate_retrieval"
         rationale = f"Neo4j linked {entity_name} to {document.title}."
 
-    return {
-        "nodes": nodes,
-        "relations": relations,
-        "score": _safe_score(path.get("score", 0.0)),
-        "rationale": rationale,
-        "pathSource": "neo4j",
-        "storePath": {
-            "nodes": raw_nodes,
-            "relations": raw_relations,
-        },
+    normalized = _canonical_graph_path(
+        document,
+        target_node=public_target_node,
+        target_label=entity_name,
+        path_source="neo4j",
+        operation=operation,
+        edge_weight=raw_score,
+        raw_relation=raw_relations[-1] if raw_relations else None,
+        rationale=rationale,
+    )
+    normalized["storePath"] = {
+        "nodes": raw_nodes,
+        "relations": raw_relations,
     }
+    return normalized
 
 
 def _has_usable_store_path(path: JsonMap) -> bool:
@@ -1080,14 +1477,14 @@ def _has_usable_store_path(path: JsonMap) -> bool:
     return bool(store_path.get("nodes")) and bool(store_path.get("relations"))
 
 
-def _safe_score(value: Any) -> float:
+def _clamp_graph_weight(value: Any) -> float:
     try:
         score = float(value)
     except (TypeError, ValueError, OverflowError):
         return 0.0
     if not math.isfinite(score):
         return 0.0
-    return round(score, 6)
+    return round(min(max(score, 0.0), 1.0), 6)
 
 
 def _list_or_tuple_of_str(value: Any) -> list[str]:
@@ -1098,36 +1495,229 @@ def _list_or_tuple_of_str(value: Any) -> list[str]:
 
 def _inferred_problem_paths(document: RetrievalDocument) -> tuple[JsonMap, ...]:
     paths = [
-        {
-            "nodes": ["input", document.id, f"concept:{_slug(concept)}"],
-            "relations": ["EXACT_MATCH", "REQUIRES"],
-            "score": 1.0,
-            "pathSource": "inferred",
-            "rationale": (
+        _canonical_graph_path(
+            document,
+            target_node=f"concept:{_slug(concept)}",
+            target_label=concept,
+            path_source="inferred",
+            operation="exact_expansion",
+            edge_weight=1.0,
+            rationale=(
                 f"Inferred from document concepts; this path was not returned by Neo4j "
                 f"for {document.title} and {concept}."
             ),
-        }
+        )
         for concept in document.concepts
     ]
     if document.problem_type:
         paths.append(
-            {
-                "nodes": [
-                    "input",
-                    document.id,
-                    f"pattern:{_slug(document.problem_type)}",
-                ],
-                "relations": ["EXACT_MATCH", "HAS_PATTERN"],
-                "score": 1.0,
-                "pathSource": "inferred",
-                "rationale": (
+            _canonical_graph_path(
+                document,
+                target_node=f"pattern:{_slug(document.problem_type)}",
+                target_label=document.problem_type,
+                path_source="inferred",
+                operation="exact_expansion",
+                edge_weight=1.0,
+                rationale=(
                     "Inferred from document problem_type; this path was not returned "
                     f"by Neo4j for {document.title} and {document.problem_type}."
                 ),
-            }
+            )
         )
     return tuple(paths)
+
+
+def _canonical_graph_path(
+    document: RetrievalDocument,
+    *,
+    target_node: str,
+    target_label: str,
+    path_source: Literal["inferred", "neo4j"],
+    operation: Literal["candidate_retrieval", "exact_expansion"],
+    edge_weight: Any,
+    rationale: str,
+    raw_relation: str | None = None,
+) -> JsonMap:
+    problem_node = _graph_node(document.id, label=document.title, layer="problem")
+    source_node = _graph_node(
+        _source_node_id(document),
+        label=_source_node_label(document),
+        layer="source",
+    )
+    target = _graph_node(
+        target_node,
+        label=target_label,
+        layer=_graph_layer_for_node(target_node),
+    )
+    source_relation_type = (
+        "EXPANDED_FROM_EXACT_MATCH"
+        if operation == "exact_expansion"
+        else "DERIVED_FROM_SOURCE"
+    )
+    relations = [
+        _graph_edge(problem_node, source_node, source_relation_type, 1.0),
+        _graph_edge(
+            source_node,
+            target,
+            _canonical_target_relation_type(target, target_label, raw_relation),
+            edge_weight,
+        ),
+    ]
+    nodes = [problem_node, source_node, target]
+    scoring = _score_graph_path(
+        nodes,
+        relations,
+        path_source=path_source,
+    )
+    return {
+        "nodes": nodes,
+        "relations": relations,
+        "score": scoring["score"],
+        "rationale": rationale,
+        "pathSource": path_source,
+        "graphPathOperation": operation,
+        "pathScoring": scoring,
+        "scoreMeta": _score_meta("graph_path"),
+    }
+
+
+def _graph_node(node_id: str, *, label: str, layer: str) -> JsonMap:
+    canonical_layer = layer if layer in _ALLOWED_GRAPH_NODE_LAYERS else "concept"
+    return {
+        "id": str(node_id),
+        "label": str(label or node_id),
+        "layer": canonical_layer,
+    }
+
+
+def _graph_edge(source: JsonMap, target: JsonMap, edge_type: str, weight: Any) -> JsonMap:
+    canonical_type = (
+        edge_type if edge_type in _ALLOWED_GRAPH_RELATION_TYPES else "SIMILAR_BY_FEATURE"
+    )
+    return {
+        "source": str(source["id"]),
+        "target": str(target["id"]),
+        "type": canonical_type,
+        "weight": _clamp_graph_weight(weight),
+    }
+
+
+def _score_graph_path(
+    nodes: Sequence[JsonMap],
+    relations: Sequence[JsonMap],
+    *,
+    path_source: Literal["inferred", "neo4j"],
+) -> JsonMap:
+    weights = [_clamp_graph_weight(relation.get("weight", 0.0)) for relation in relations]
+    min_edge_weight = min(weights) if weights else 0.0
+    mean_edge_weight = sum(weights) / len(weights) if weights else 0.0
+    source_bonus = 1.0
+    feature_node_ids = {
+        str(node.get("id"))
+        for node in nodes
+        if node.get("layer") == "code_feature"
+    }
+    feature_weights = [
+        _clamp_graph_weight(relation.get("weight", 0.0))
+        for relation in relations
+        if relation.get("source") in feature_node_ids
+        or relation.get("target") in feature_node_ids
+    ]
+    feature_overlap = sum(feature_weights) / len(feature_weights) if feature_weights else 0.0
+    edge_count = len(relations)
+    path_length_penalty = 0.04 * max(edge_count - 2, 0)
+    components = {
+        "minEdgeWeight": _round_graph_score(min_edge_weight),
+        "meanEdgeWeight": _round_graph_score(mean_edge_weight),
+        "sourceBonus": _round_graph_score(source_bonus),
+        "featureOverlap": _round_graph_score(feature_overlap),
+        "pathLengthPenalty": _round_graph_score(path_length_penalty),
+    }
+    if min_edge_weight <= 0:
+        score = 0.0
+    else:
+        score = _round_graph_score(
+            (0.45 * components["minEdgeWeight"])
+            + (0.25 * components["meanEdgeWeight"])
+            + (0.15 * components["sourceBonus"])
+            + (0.15 * components["featureOverlap"])
+            - components["pathLengthPenalty"]
+        )
+    return {
+        "strategy": _GRAPH_PATH_SCORING_STRATEGY,
+        "score": score,
+        "components": components,
+    }
+
+
+def _round_graph_score(value: float) -> float:
+    return round(min(max(float(value), 0.0), 1.0), 6)
+
+
+def _graph_layer_for_node(node_id: str) -> str:
+    if node_id.startswith("pattern:"):
+        return "pattern"
+    if node_id.startswith("code_feature:") or node_id.startswith("code-feature:"):
+        return "code_feature"
+    if node_id.startswith("source:"):
+        return "source"
+    if node_id.startswith("chunk:") or ":statement:" in node_id or ":answer:" in node_id:
+        return "chunk"
+    return "concept"
+
+
+def _canonical_target_relation_type(
+    target: JsonMap,
+    target_label: str,
+    raw_relation: str | None,
+) -> str:
+    raw_type = str(raw_relation or "").upper()
+    if raw_type in _ALLOWED_GRAPH_RELATION_TYPES:
+        return raw_type
+    target_layer = str(target.get("layer") or "")
+    if target_layer == "pattern":
+        return "IMPLEMENTS_PATTERN"
+    if target_layer == "code_feature":
+        return "HAS_CODE_FEATURE"
+    if target_layer == "chunk":
+        return "HAS_SECTION"
+    if _classify_concept(target_label) == "data_structure":
+        return "USES_DATA_STRUCTURE"
+    return "MENTIONS_CONCEPT"
+
+
+def _source_node_id(document: RetrievalDocument) -> str:
+    source = _slug(document.source or "source")
+    source_id = _slug(document.source_id or document.id)
+    return f"source:{source}:{source_id}"
+
+
+def _source_node_label(document: RetrievalDocument) -> str:
+    if document.source and document.source_id:
+        return f"{document.source} {document.source_id}"
+    return document.source or document.source_id or document.title
+
+
+def _graph_path_target_id(path: JsonMap) -> str:
+    nodes = path.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return ""
+    target = nodes[-1]
+    if isinstance(target, dict):
+        return str(target.get("id") or "")
+    return str(target)
+
+
+def _graph_path_node_label(node: Any) -> str:
+    if isinstance(node, dict):
+        return str(node.get("label") or node.get("id") or "")
+    return str(node)
+
+
+def _graph_path_relation_label(relation: Any) -> str:
+    if isinstance(relation, dict):
+        return str(relation.get("type") or relation.get("relation") or "")
+    return str(relation)
 
 
 def _mapping(value: Any) -> JsonMap:
@@ -1214,6 +1804,32 @@ def _classify_concept(name: str) -> str:
     if lowered in {"queue", "stack", "heap", "array", "hash map"}:
         return "data_structure"
     return "concept"
+
+
+def _code_feature_compatibility(
+    understanding: QueryUnderstanding | None,
+    candidate: RetrievalCandidate,
+) -> float:
+    if understanding is None or understanding.code_features is None:
+        return 0.0
+    features = understanding.code_features.features
+    if not features:
+        return 0.0
+
+    candidate_text = " ".join(
+        (
+            candidate.title,
+            candidate.text,
+            " ".join(candidate.concepts),
+            candidate.problem_type,
+        )
+    ).lower()
+    matched = 0
+    for feature in features:
+        terms = _CODE_FEATURE_COMPATIBILITY_TERMS.get(feature, ())
+        if any(term in candidate_text for term in terms):
+            matched += 1
+    return round(matched / len(features), 6)
 
 
 def _append_unique(values: list[str], item: str) -> None:

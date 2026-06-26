@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from importlib import metadata
 import uuid
 from typing import Any, Sequence
 
@@ -8,6 +10,88 @@ from ..stores import SearchCandidate, VectorRecord
 
 class QdrantAdapterError(RuntimeError):
     pass
+
+
+def qdrant_compatibility_warning(client: Any) -> dict[str, str] | None:
+    client_version_text = _client_version_text(client)
+    if client_version_text is None:
+        return None
+    server_version_text = _server_version_text(client)
+    if server_version_text is None:
+        return None
+
+    client_minor = _major_minor(client_version_text)
+    server_minor = _major_minor(server_version_text)
+    if client_minor is None or server_minor is None or client_minor == server_minor:
+        return None
+    return {
+        "adapter": "qdrant",
+        "severity": "warning",
+        "message": (
+            f"Qdrant client {client_version_text} is outside the supported server "
+            f"{server_version_text} minor range."
+        ),
+    }
+
+
+def _client_version_text(client: Any) -> str | None:
+    missing = object()
+    try:
+        client_version = getattr(client, "client_version", missing)
+    except Exception:
+        return None
+    if client_version is missing:
+        try:
+            client_version = getattr(client, "version", missing)
+        except Exception:
+            return None
+    if client_version is missing:
+        try:
+            client_version = metadata.version("qdrant-client")
+        except Exception:
+            return None
+    elif client_version is None:
+        try:
+            client_version = getattr(client, "version", missing)
+        except Exception:
+            return None
+        if client_version is missing:
+            return None
+    return _version_text(client_version)
+
+
+def _server_version_text(client: Any) -> str | None:
+    try:
+        info = getattr(client, "info", None)
+    except Exception:
+        return None
+    if callable(info):
+        try:
+            return _version_from_info(info())
+        except Exception:
+            return None
+
+    try:
+        get_version = getattr(client, "get_version", None)
+    except Exception:
+        return None
+    if callable(get_version):
+        try:
+            return _version_from_info(get_version())
+        except Exception:
+            return None
+    return None
+
+
+def _version_from_info(value: object) -> str | None:
+    if isinstance(value, Mapping):
+        return _version_text(value.get("version"))
+    if isinstance(value, str):
+        return _version_text(value)
+    try:
+        return _version_text(getattr(value, "version", None))
+    except Exception:
+        return None
 
 
 class QdrantVectorStore:
@@ -27,7 +111,11 @@ class QdrantVectorStore:
             from qdrant_client import QdrantClient
         except Exception as exc:  # pragma: no cover - depends on optional install state
             raise QdrantAdapterError("qdrant-client is not installed") from exc
-        self._client = QdrantClient(url=url, timeout=timeout)
+        self._client = QdrantClient(
+            url=url,
+            timeout=timeout,
+            check_compatibility=False,
+        )
 
     def upsert(self, records: Sequence[VectorRecord]) -> None:
         if not records:
@@ -59,6 +147,9 @@ class QdrantVectorStore:
                 query_filter=filters,
             )
         return tuple(_candidate_from_point(point) for point in points)
+
+    def compatibility_warning(self) -> dict[str, str] | None:
+        return qdrant_compatibility_warning(self._client)
 
     def _ensure_collection(self, vector_size: int) -> None:
         if not hasattr(self._client, "collection_exists"):
@@ -94,3 +185,20 @@ def _candidate_from_point(point: Any) -> SearchCandidate:
         score=float(getattr(point, "score", 0.0)),
         payload=payload,
     )
+
+
+def _version_text(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text or None
+
+
+def _major_minor(version: str) -> str | None:
+    parts = version.split(".")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    return ".".join(parts[:2])

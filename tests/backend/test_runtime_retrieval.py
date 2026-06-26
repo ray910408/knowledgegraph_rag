@@ -135,6 +135,9 @@ class FakeVectorStore:
             ),
         )
 
+    def compatibility_warning(self):
+        return None
+
 
 class FakeGraphStore:
     constructor_calls: ClassVar[list[dict[str, object]]] = []
@@ -372,6 +375,7 @@ def test_build_runtime_retrieval_local_does_not_construct_external_stores(monkey
             "model": "BAAI/bge-reranker-v2-m3",
         },
     }
+    assert configured.compatibility_warnings == []
     assert result.vector_candidates
     assert result.bm25_candidates
 
@@ -500,6 +504,61 @@ def test_build_runtime_retrieval_stores_injects_qdrant_neo4j_and_bm25(monkeypatc
     assert any("storePath" in path for path in result.graph_paths)
 
 
+def test_build_runtime_retrieval_stores_propagates_qdrant_compatibility_warning(monkeypatch, tmp_path):
+    from backend.app.retrieval import runtime
+
+    class WarningVectorStore(FakeVectorStore):
+        def compatibility_warning(self):
+            return {
+                "adapter": "qdrant",
+                "severity": "warning",
+                "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+            }
+
+    index_path = tmp_path / "bm25_index.json"
+    _write_bm25_index(index_path)
+    monkeypatch.setattr(runtime, "QdrantVectorStore", WarningVectorStore)
+    monkeypatch.setattr(runtime, "Neo4jGraphStore", FakeGraphStore)
+    settings = runtime.RuntimeRetrievalSettings(backend="stores", bm25_index_path=index_path)
+
+    configured = runtime.build_runtime_retrieval(
+        settings=settings,
+        documents=_documents(),
+        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+    )
+
+    assert configured.compatibility_warnings == [
+        {
+            "adapter": "qdrant",
+            "severity": "warning",
+            "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+        }
+    ]
+
+
+def test_build_runtime_retrieval_stores_ignores_compatibility_hook_errors(monkeypatch, tmp_path):
+    from backend.app.retrieval import runtime
+
+    class ExplodingWarningVectorStore(FakeVectorStore):
+        def compatibility_warning(self):
+            raise RuntimeError("compatibility probe unavailable")
+
+    index_path = tmp_path / "bm25_index.json"
+    _write_bm25_index(index_path)
+    monkeypatch.setattr(runtime, "QdrantVectorStore", ExplodingWarningVectorStore)
+    monkeypatch.setattr(runtime, "Neo4jGraphStore", FakeGraphStore)
+    settings = runtime.RuntimeRetrievalSettings(backend="stores", bm25_index_path=index_path)
+
+    configured = runtime.build_runtime_retrieval(
+        settings=settings,
+        documents=_documents(),
+        embedding_provider=DeterministicMockEmbeddingProvider(dimension=8),
+    )
+
+    assert configured.backend == "stores"
+    assert configured.compatibility_warnings == []
+
+
 def test_build_runtime_retrieval_stores_loads_processed_documents_when_no_override(monkeypatch, tmp_path):
     from backend.app.retrieval import runtime
 
@@ -596,6 +655,168 @@ def test_add_runtime_debug_trace_copies_provider_sources_without_mutating_inputs
     }
     assert candidate_sources == {"vector": "local", "graph": "local", "bm25": "local"}
     assert provider_sources["embedding"]["model"] == "BAAI/bge-m3"
+
+
+def test_runtime_debug_trace_includes_store_compatibility_warnings():
+    from backend.app.retrieval.runtime import add_runtime_debug_trace
+
+    warning = {
+        "adapter": "qdrant",
+        "severity": "warning",
+        "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+    }
+    labeled = add_runtime_debug_trace(
+        {
+            "vectorCandidates": [],
+            "graphCandidates": [],
+            "bm25Candidates": [],
+            "fusionScores": [],
+            "rerankerScores": [],
+        },
+        {"vector": "qdrant", "graph": "neo4j", "bm25": "bm25_index"},
+        compatibility_warnings=(warning,),
+    )
+
+    assert labeled["compatibilityWarnings"] == [
+        {
+            "adapter": "qdrant",
+            "severity": "warning",
+            "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+        }
+    ]
+    labeled["compatibilityWarnings"][0]["message"] = "changed"
+    assert warning == {
+        "adapter": "qdrant",
+        "severity": "warning",
+        "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("client_version", "server_version", "expected"),
+    [
+        ("1.15.4", "1.15.3", None),
+        (
+            "1.18.0",
+            "1.15.3",
+            {
+                "adapter": "qdrant",
+                "severity": "warning",
+                "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+            },
+        ),
+        (None, "1.15.3", None),
+        ("1.18.0", None, None),
+    ],
+)
+def test_qdrant_compatibility_warning_handles_versions(client_version, server_version, expected):
+    from backend.app.adapters.qdrant import qdrant_compatibility_warning
+
+    class FakeClient:
+        def get_version(self):
+            return server_version
+
+    client = FakeClient()
+    client.client_version = client_version
+
+    assert qdrant_compatibility_warning(client) == expected
+
+
+def test_qdrant_compatibility_warning_ignores_get_version_errors():
+    from backend.app.adapters.qdrant import qdrant_compatibility_warning
+
+    class FakeClient:
+        client_version = "1.18.0"
+
+        def get_version(self):
+            raise RuntimeError("server unavailable")
+
+    assert qdrant_compatibility_warning(FakeClient()) is None
+
+
+def test_qdrant_compatibility_warning_uses_version_attribute_fallback():
+    from backend.app.adapters.qdrant import qdrant_compatibility_warning
+
+    class FakeClient:
+        version = "1.18.0"
+
+        def get_version(self):
+            return "1.15.3"
+
+    assert qdrant_compatibility_warning(FakeClient()) == {
+        "adapter": "qdrant",
+        "severity": "warning",
+        "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+    }
+
+
+def test_qdrant_compatibility_warning_uses_package_version_and_public_info(monkeypatch):
+    from backend.app.adapters import qdrant
+
+    package_names: list[str] = []
+
+    def fake_package_version(package_name: str) -> str:
+        package_names.append(package_name)
+        return "1.18.0"
+
+    monkeypatch.setattr(qdrant.metadata, "version", fake_package_version)
+
+    class VersionInfo:
+        version = "1.15.3"
+
+    class Sdk118Client:
+        def __init__(self):
+            self.info_calls = 0
+
+        def info(self):
+            self.info_calls += 1
+            return VersionInfo()
+
+    client = Sdk118Client()
+
+    assert qdrant.qdrant_compatibility_warning(client) == {
+        "adapter": "qdrant",
+        "severity": "warning",
+        "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range.",
+    }
+    assert package_names == ["qdrant-client"]
+    assert client.info_calls == 1
+
+
+def test_qdrant_vector_store_disables_sdk_compatibility_check(monkeypatch):
+    import qdrant_client
+
+    from backend.app.adapters.qdrant import QdrantVectorStore
+
+    captured: dict[str, object] = {}
+
+    class FakeQdrantClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(qdrant_client, "QdrantClient", FakeQdrantClient)
+
+    QdrantVectorStore(url="http://qdrant.example:6333", timeout=2.0)
+
+    assert captured["url"] == "http://qdrant.example:6333"
+    assert captured["timeout"] == 2.0
+    assert captured["check_compatibility"] is False
+
+
+def test_qdrant_compatibility_warning_ignores_client_version_property_errors():
+    from backend.app.adapters.qdrant import qdrant_compatibility_warning
+
+    class FakeClient:
+        @property
+        def client_version(self):
+            raise RuntimeError("client version unavailable")
+
+        version = "1.18.0"
+
+        def get_version(self):
+            return "1.15.3"
+
+    assert qdrant_compatibility_warning(FakeClient()) is None
 
 
 def test_add_runtime_debug_trace_omits_provider_sources_when_not_supplied():

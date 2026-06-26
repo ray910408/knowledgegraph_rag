@@ -11,6 +11,7 @@ from backend.app.contracts import EntityRecord, RelationRecord
 from backend.app.providers import DeterministicMockEmbeddingProvider
 from backend.app.retrieval.pipeline import (
     BM25SearchService,
+    CodeFeatureExtractor,
     ContextBuilder,
     EntityLinkingService,
     EvidenceBuilder,
@@ -26,6 +27,49 @@ from backend.app.retrieval.pipeline import (
     _aggregate_problem_candidates,
 )
 from backend.app.stores import BM25Document, SearchCandidate, VectorRecord
+
+
+CPP_BFS_SNIPPET = """
+#include <bits/stdc++.h>
+using namespace std;
+
+int bfs(vector<vector<int>>& grid) {
+    queue<pair<int, int>> q;
+    vector<vector<int>> visited(grid.size(), vector<int>(grid[0].size(), 0));
+    vector<pair<int, int>> directions = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    while (!q.empty()) {
+        auto [r, c] = q.front();
+        q.pop();
+        for (auto [dr, dc] : directions) {
+            int nr = r + dr;
+            int nc = c + dc;
+            if (!visited[nr][nc]) {
+                visited[nr][nc] = 1;
+                q.push({nr, nc});
+            }
+        }
+    }
+    return 0;
+}
+""".strip()
+
+PYTHON_BFS_SNIPPET = """
+from collections import deque
+
+def bfs(grid):
+    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+    queue = deque([(0, 0)])
+    seen = set([(0, 0)])
+    while queue:
+        row, col = queue.popleft()
+        for dr, dc in directions:
+            nr = row + dr
+            nc = col + dc
+            if 0 <= nr < len(grid) and 0 <= nc < len(grid[0]) and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                queue.append((nr, nc))
+    return len(seen)
+""".strip()
 
 
 def _documents() -> tuple[RetrievalDocument, ...]:
@@ -172,6 +216,73 @@ def _build_graph_store(documents: tuple[RetrievalDocument, ...]) -> InMemoryGrap
     return store
 
 
+def test_code_feature_extractor_maps_cpp_and_python_bfs_to_same_features():
+    expected_features = ("bfs", "queue_frontier", "visited_state", "grid_traversal")
+
+    cpp_features = CodeFeatureExtractor().extract(CPP_BFS_SNIPPET, input_kind="cpp")
+    python_features = CodeFeatureExtractor().extract(PYTHON_BFS_SNIPPET, input_kind="python")
+
+    assert cpp_features.language == "cpp"
+    assert cpp_features.features == expected_features
+    assert python_features.language == "python"
+    assert python_features.features == expected_features
+
+
+def test_code_queries_link_same_graph_concepts_for_cpp_and_python_bfs():
+    expected_feature_nodes = {
+        "code_feature:bfs",
+        "code_feature:queue_frontier",
+        "code_feature:visited_state",
+    }
+
+    for snippet, language in (
+        (CPP_BFS_SNIPPET, "cpp"),
+        (PYTHON_BFS_SNIPPET, "python"),
+    ):
+        understanding = QueryUnderstandingService().understand(snippet)
+        linked_entities = EntityLinkingService().link(understanding)
+        linked_by_name = {str(entity["name"]): entity for entity in linked_entities}
+        code_feature_nodes = {
+            str(entity["codeFeatureNodeId"])
+            for entity in linked_entities
+            if entity.get("matchedBy") == "code_feature"
+        }
+
+        assert understanding.input_kind == language
+        assert understanding.code_features is not None
+        assert understanding.code_features.language == language
+        assert set(understanding.code_features.features) >= {
+            "bfs",
+            "queue_frontier",
+            "visited_state",
+        }
+        assert {"BFS", "Queue", "Visited Array"} <= set(linked_by_name)
+        assert expected_feature_nodes <= code_feature_nodes
+        assert linked_by_name["BFS"]["matchedBy"] == "code_feature"
+        assert linked_by_name["Queue"]["matchedBy"] == "code_feature"
+        assert linked_by_name["Visited Array"]["matchedBy"] == "code_feature"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "#include <queue>\nint main(){ std::queue<int> q; q.push(1); }",
+        "def solve(nums):\n    seen=set(nums)\n    return len(seen)",
+        "from collections import deque\ndef solve(a):\n    q=deque()\n    q.append(1)\n    return q.popleft()",
+    ],
+)
+def test_code_feature_extractor_ignores_non_traversal_queue_deque_and_set(snippet: str):
+    understanding = QueryUnderstandingService().understand(snippet)
+    linked_entities = EntityLinkingService().link(understanding)
+    linked_names = {str(entity["name"]) for entity in linked_entities}
+
+    assert understanding.code_features is not None
+    assert understanding.code_features.features == ()
+    assert all(entity.get("matchedBy") != "code_feature" for entity in linked_entities)
+    assert "BFS" not in linked_names
+    assert "Visited Array" not in linked_names
+
+
 def test_vector_search_service_can_use_vector_store():
     documents = _documents()
     embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
@@ -224,6 +335,32 @@ class _FakeBM25Store:
     def search(self, query, *, top_k):
         self.requested_top_k.append(top_k)
         return self._candidates[:top_k]
+
+
+def _path_node_ids(path: dict[str, object]) -> list[str]:
+    nodes = path.get("nodes")
+    if not isinstance(nodes, list):
+        return []
+    ids: list[str] = []
+    for node in nodes:
+        if isinstance(node, dict):
+            ids.append(str(node.get("id") or ""))
+        else:
+            ids.append(str(node))
+    return ids
+
+
+def _path_relation_types(path: dict[str, object]) -> list[str]:
+    relations = path.get("relations")
+    if not isinstance(relations, list):
+        return []
+    types: list[str] = []
+    for relation in relations:
+        if isinstance(relation, dict):
+            types.append(str(relation.get("type") or ""))
+        else:
+            types.append(str(relation))
+    return types
 
 
 def test_store_backed_bm25_filters_zero_score_candidates():
@@ -519,8 +656,8 @@ def test_graph_search_service_can_use_graph_store():
     assert result.candidates[0].id == "leetcode-994"
     assert result.candidates[0].source == "graph"
     assert any(
-        path["nodes"] == ["input", "concept:bfs", "leetcode-994"]
-        and path["relations"] == ["MENTIONS", "REQUIRED_BY"]
+        _path_node_ids(path) == ["leetcode-994", "source:leetcode:994", "concept:bfs"]
+        and _path_relation_types(path) == ["DERIVED_FROM_SOURCE", "MENTIONS_CONCEPT"]
         and path["pathSource"] == "neo4j"
         and path["storePath"]["nodes"] == ["leetcode-994", "concept:bfs"]
         and path["storePath"]["relations"] == ["REQUIRES"]
@@ -689,7 +826,7 @@ def test_online_pipeline_top_k_limits_mode_specific_final_results():
     assert len(EvidenceBuilder().build(result.reranked_candidates, ()).similar_problems) == 1
 
 
-def test_online_pipeline_mode_keeps_exact_match_and_graph_paths_independent():
+def test_exact_graph_paths_without_graph_candidates_are_labeled_as_exact_expansion():
     similar_document = RetrievalDocument(
         id="leetcode-1091",
         source="LeetCode",
@@ -720,8 +857,40 @@ def test_online_pipeline_mode_keeps_exact_match_and_graph_paths_independent():
 
     assert result.matched_problem is not None
     assert result.matched_problem.problem_id == "uva-10653"
+    assert result.graph_candidates == ()
     assert result.graph_paths
     assert [candidate.id for candidate in result.reranked_candidates] == ["leetcode-1091"]
+
+    allowed_layers = {"problem", "chunk", "concept", "code_feature", "pattern", "source"}
+    allowed_relation_types = {
+        "HAS_SECTION",
+        "DERIVED_FROM_SOURCE",
+        "MENTIONS_CONCEPT",
+        "HAS_CODE_FEATURE",
+        "USES_DATA_STRUCTURE",
+        "IMPLEMENTS_PATTERN",
+        "SIMILAR_BY_FEATURE",
+        "EXPANDED_FROM_EXACT_MATCH",
+    }
+    required_components = {
+        "minEdgeWeight",
+        "meanEdgeWeight",
+        "sourceBonus",
+        "featureOverlap",
+        "pathLengthPenalty",
+    }
+    for path in result.graph_paths:
+        assert {node["layer"] for node in path["nodes"]} <= allowed_layers
+        assert {relation["type"] for relation in path["relations"]} <= allowed_relation_types
+        assert all(0 <= relation["weight"] <= 1 for relation in path["relations"])
+        assert path["graphPathOperation"] == "exact_expansion"
+        assert path["pathSource"] in {"inferred", "neo4j"}
+        assert path["pathScoring"]["strategy"] == "weighted_layered_path_v1"
+        assert path["score"] == path["pathScoring"]["score"]
+        assert required_components <= set(path["pathScoring"]["components"])
+        assert path["pathScoring"]["components"]["sourceBonus"] == 1.0
+        assert path["pathScoring"]["components"]["featureOverlap"] == 0.0
+        assert path["pathScoring"]["components"]["pathLengthPenalty"] == 0.0
 
 
 def test_store_chunk_candidates_are_aggregated_by_problem_and_keep_raw_chunks():
@@ -785,7 +954,15 @@ def test_vector_graph_and_bm25_search_return_candidates():
     assert bm25_candidates[0].id == "leetcode-994"
     assert bm25_candidates[0].source == "bm25"
     assert graph_result.candidates[0].id == "leetcode-994"
-    assert graph_result.paths[0]["nodes"] == ["input", "concept:bfs", "leetcode-994"]
+    assert _path_node_ids(graph_result.paths[0]) == [
+        "leetcode-994",
+        "source:leetcode:994",
+        "concept:bfs",
+    ]
+    assert _path_relation_types(graph_result.paths[0]) == [
+        "DERIVED_FROM_SOURCE",
+        "MENTIONS_CONCEPT",
+    ]
     assert graph_result.paths[0]["pathSource"] == "inferred"
 
 
@@ -902,6 +1079,104 @@ def test_hybrid_fusion_counts_each_source_once_per_problem():
     assert by_id["leetcode-994"].score == 0.35
     assert by_id["leetcode-994"].payload["sources"] == ["vector"]
     assert by_id["leetcode-300"].score == round(0.35 * (0.6 / 0.9), 6)
+
+
+def test_fusion_preserves_raw_chunks_from_every_chunk_source():
+    vector_chunk = {
+        "id": "uva-10653:hint:1",
+        "title": "Bombs! NO they are Mines!!",
+        "source": "vector",
+        "score": 0.9,
+        "payload": {"storeCandidateId": "uva-10653:hint:1", "kind": "hint"},
+    }
+    bm25_chunk = {
+        "id": "uva-10653:statement:0",
+        "title": "Bombs! NO they are Mines!!",
+        "source": "bm25",
+        "score": 3.0,
+        "payload": {"storeCandidateId": "uva-10653:statement:0", "kind": "statement"},
+    }
+
+    candidates = HybridFusionService().fuse(
+        vector_candidates=(
+            RetrievalCandidate(
+                id="uva-10653",
+                title="Bombs! NO they are Mines!!",
+                source="vector",
+                score=0.9,
+                text="BFS hint",
+                concepts=("BFS", "Queue"),
+                problem_type="Graph Traversal",
+                payload={
+                    "rawChunks": [vector_chunk],
+                    "rawChunksComplete": True,
+                },
+            ),
+        ),
+        graph_candidates=(),
+        bm25_candidates=(
+            RetrievalCandidate(
+                id="uva-10653",
+                title="Bombs! NO they are Mines!!",
+                source="bm25",
+                score=3.0,
+                text="BFS statement",
+                concepts=("BFS", "Queue"),
+                problem_type="Graph Traversal",
+                payload={
+                    "rawChunks": [bm25_chunk],
+                    "rawChunksComplete": True,
+                },
+            ),
+        ),
+        top_k=1,
+    )
+
+    payload = candidates[0].payload
+    raw_chunk_ids = [
+        chunk["payload"]["storeCandidateId"]
+        for chunk in payload["rawChunks"]
+    ]
+
+    assert payload["sources"] == ["vector", "bm25"]
+    assert raw_chunk_ids == ["uva-10653:hint:1", "uva-10653:statement:0"]
+    assert payload["chunkEvidence"] == {
+        "available": True,
+        "complete": True,
+        "missingSources": [],
+        "unavailableReason": "",
+    }
+
+
+def test_fusion_treats_candidate_mapping_fallback_chunks_as_available_by_default():
+    candidates = HybridFusionService().fuse(
+        vector_candidates=(
+            RetrievalCandidate(
+                id="leetcode-994",
+                title="Rotting Oranges",
+                source="vector",
+                score=0.9,
+                text="BFS grid",
+                concepts=("BFS",),
+                problem_type="Graph Traversal",
+                payload={},
+            ),
+        ),
+        graph_candidates=(),
+        bm25_candidates=(),
+        top_k=1,
+    )
+
+    payload = candidates[0].payload
+
+    assert payload["rawChunksComplete"] is True
+    assert payload["chunkEvidence"] == {
+        "available": True,
+        "complete": True,
+        "missingSources": [],
+        "unavailableReason": "",
+    }
+    assert payload["rawChunks"][0]["source"] == "vector"
 
 
 def test_hybrid_fusion_ignores_non_positive_candidates_from_every_source():
@@ -1118,6 +1393,35 @@ def test_online_pipeline_trace_has_required_debug_sections():
     assert trace["rerankerScores"]
 
 
+def test_trace_candidates_and_graph_paths_include_score_metadata():
+    result = OnlineQueryPipeline(documents=_documents()).run("BFS shortest path", top_k=2)
+
+    trace = result.trace.to_mapping()
+    expected_stages = {
+        "vectorCandidates": ("vector", "Vector similarity", False),
+        "graphCandidates": ("graph", "Graph match", False),
+        "bm25Candidates": ("bm25", "BM25 lexical score", False),
+        "fusionScores": ("fusion", "Hybrid fusion score", False),
+        "rerankerScores": ("reranker", "Reranker score", False),
+    }
+    for lane, (stage, display_label, comparable) in expected_stages.items():
+        assert trace[lane]
+        for candidate in trace[lane]:
+            assert candidate["scoreMeta"] == {
+                "stage": stage,
+                "displayLabel": display_label,
+                "comparableAcrossStages": comparable,
+            }
+
+    assert result.graph_paths
+    for path in result.graph_paths:
+        assert path["scoreMeta"] == {
+            "stage": "graph_path",
+            "displayLabel": "Graph path confidence",
+            "comparableAcrossStages": False,
+        }
+
+
 def _uva_document() -> RetrievalDocument:
     return RetrievalDocument(
         id="uva-10653",
@@ -1177,13 +1481,13 @@ def test_graph_search_for_exact_problem_returns_problem_node_paths_with_source_l
 
     assert result.candidates == ()
     assert result.paths
-    paths_by_target = {path["nodes"][-1]: path for path in result.paths}
+    paths_by_target = {_path_node_ids(path)[-1]: path for path in result.paths}
     assert paths_by_target["concept:bfs"]["pathSource"] == "neo4j"
     assert paths_by_target["concept:queue"]["pathSource"] == "neo4j"
     assert paths_by_target["concept:visited-array"]["pathSource"] == "inferred"
     assert paths_by_target["pattern:graph-traversal"]["pathSource"] == "inferred"
-    assert ["input", "uva-10653", "concept:bfs"] in [
-        path["nodes"] for path in result.paths
+    assert ["uva-10653", "source:uva:10653", "concept:bfs"] in [
+        _path_node_ids(path) for path in result.paths
     ]
 
 
@@ -1217,7 +1521,7 @@ def test_graph_search_for_exact_problem_combines_partial_store_paths_with_inferr
         top_k=3,
     )
 
-    paths_by_target = {path["nodes"][-1]: path for path in result.paths}
+    paths_by_target = {_path_node_ids(path)[-1]: path for path in result.paths}
     assert paths_by_target["concept:bfs"]["pathSource"] == "neo4j"
     assert paths_by_target["concept:queue"]["pathSource"] == "inferred"
     assert paths_by_target["concept:visited-array"]["pathSource"] == "inferred"
@@ -1258,10 +1562,13 @@ def test_graph_search_for_exact_problem_uses_reverse_store_path_with_canonical_p
         top_k=3,
     )
 
-    bfs_paths = [path for path in result.paths if path["nodes"][-1] == "concept:bfs"]
+    bfs_paths = [path for path in result.paths if _path_node_ids(path)[-1] == "concept:bfs"]
     assert len(bfs_paths) == 1
-    assert bfs_paths[0]["nodes"] == ["input", "uva-10653", "concept:bfs"]
-    assert bfs_paths[0]["relations"] == ["EXACT_MATCH", "REQUIRED_BY"]
+    assert _path_node_ids(bfs_paths[0]) == ["uva-10653", "source:uva:10653", "concept:bfs"]
+    assert _path_relation_types(bfs_paths[0]) == [
+        "EXPANDED_FROM_EXACT_MATCH",
+        "MENTIONS_CONCEPT",
+    ]
     assert bfs_paths[0]["pathSource"] == "neo4j"
     assert bfs_paths[0]["storePath"]["nodes"] == ["concept:bfs", "uva-10653"]
     assert bfs_paths[0]["storePath"]["relations"] == ["REQUIRED_BY"]
@@ -1302,10 +1609,13 @@ def test_graph_search_for_exact_problem_prefers_valid_reverse_store_path_over_ma
         top_k=3,
     )
 
-    bfs_paths = [path for path in result.paths if path["nodes"][-1] == "concept:bfs"]
+    bfs_paths = [path for path in result.paths if _path_node_ids(path)[-1] == "concept:bfs"]
     assert len(bfs_paths) == 1
-    assert bfs_paths[0]["nodes"] == ["input", "uva-10653", "concept:bfs"]
-    assert bfs_paths[0]["relations"] == ["EXACT_MATCH", "REQUIRED_BY"]
+    assert _path_node_ids(bfs_paths[0]) == ["uva-10653", "source:uva:10653", "concept:bfs"]
+    assert _path_relation_types(bfs_paths[0]) == [
+        "EXPANDED_FROM_EXACT_MATCH",
+        "MENTIONS_CONCEPT",
+    ]
     assert bfs_paths[0]["pathSource"] == "neo4j"
     assert bfs_paths[0]["storePath"]["nodes"] == ["concept:bfs", "uva-10653"]
     assert bfs_paths[0]["storePath"]["relations"] == ["REQUIRED_BY"]
@@ -1336,7 +1646,7 @@ def test_graph_search_for_exact_problem_normalizes_malformed_store_paths_without
         top_k=3,
     )
 
-    bfs_path = next(path for path in result.paths if path["nodes"][-1] == "concept:bfs")
+    bfs_path = next(path for path in result.paths if _path_node_ids(path)[-1] == "concept:bfs")
     assert bfs_path["score"] == 0.0
     assert bfs_path["pathSource"] == "neo4j"
     assert bfs_path["storePath"] == {"nodes": [], "relations": []}
@@ -1384,10 +1694,10 @@ def test_graph_search_for_exact_problem_deduplicates_direct_and_reverse_store_pa
 
     assert ("concept:bfs", "uva-10653", 3) in graph_store.calls
     assert [
-        path["nodes"]
+        _path_node_ids(path)
         for path in result.paths
-        if path["nodes"] == ["input", "uva-10653", "concept:bfs"]
-    ] == [["input", "uva-10653", "concept:bfs"]]
+        if _path_node_ids(path) == ["uva-10653", "source:uva:10653", "concept:bfs"]
+    ] == [["uva-10653", "source:uva:10653", "concept:bfs"]]
 
 
 def test_graph_search_for_exact_problem_skips_empty_problem_type_store_target():
@@ -1481,6 +1791,28 @@ def test_exact_problem_matcher_recognizes_problem_id_source_id_and_title():
     assert partial_title.confidence < exact_title.confidence
 
 
+def test_exact_match_payload_seeds_statement_answer_and_hints_in_order():
+    documents = (_uva_document(),)
+    match = ExactProblemMatcher(documents).match(
+        QueryUnderstandingService(documents).understand("UVA-10653 - Bombs! NO they are Mines!!")
+    )
+
+    assert match is not None
+    payload = match.candidate.payload
+    assert [
+        chunk["payload"]["kind"]
+        for chunk in payload["rawChunks"]
+    ] == ["statement", "answer", "hint", "hint"]
+    assert payload["chunkCount"] >= 3
+    assert payload["rawChunksComplete"] is True
+    assert payload["chunkEvidence"] == {
+        "available": True,
+        "complete": True,
+        "missingSources": [],
+        "unavailableReason": "",
+    }
+
+
 def test_partial_problem_match_does_not_override_python_input_kind():
     understanding = QueryUnderstandingService((_uva_document(),)).understand(
         "def solve():\n    bombs = mines = shortest = path = []"
@@ -1526,9 +1858,9 @@ def test_online_pipeline_promotes_exact_problem_seed_without_polluting_similar_p
     assert all(candidate.id != "uva-10653" for candidate in result.graph_candidates)
     assert all(candidate.id != "uva-10653" for candidate in result.fused_candidates)
     assert all(candidate.id != "uva-10653" for candidate in result.reranked_candidates)
-    assert result.graph_paths[0]["nodes"] == [
-        "input",
+    assert _path_node_ids(result.graph_paths[0]) == [
         "uva-10653",
+        "source:uva:10653",
         "concept:bfs",
     ]
     assert result.graph_paths[0]["pathSource"] == "inferred"

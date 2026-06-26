@@ -66,12 +66,36 @@ export interface ProviderDescriptor {
   adapter?: string;
 }
 
+export interface CompatibilityWarning {
+  adapter: string;
+  severity: string;
+  message: string;
+}
+
 export interface RetrievalConfig {
   embeddingModel: string;
   rerankerModel: string;
   language: string;
   embeddingProvider?: ProviderDescriptor;
   rerankerProvider?: ProviderDescriptor;
+}
+
+export interface ScoreMeta {
+  stage: string;
+  displayLabel: string;
+  comparableAcrossStages: boolean;
+}
+
+export interface ChunkEvidence {
+  available: boolean;
+  complete: boolean;
+  missingSources: string[];
+  unavailableReason: string;
+}
+
+export interface CodeFeatures {
+  language: string;
+  features: string[];
 }
 
 export interface TraceCandidate {
@@ -82,17 +106,41 @@ export interface TraceCandidate {
   score?: number;
   concepts?: string[];
   problemType?: string;
+  scoreMeta?: ScoreMeta;
   payload?: Record<string, unknown>;
   rawChunks?: TraceCandidate[];
+  chunkEvidence?: ChunkEvidence;
+}
+
+export interface GraphPathNode {
+  id?: string;
+  label?: string;
+  layer?: string;
+}
+
+export interface GraphPathRelation {
+  source?: string;
+  target?: string;
+  type?: string;
+  weight?: number;
+}
+
+export interface GraphPathScoring {
+  strategy?: string;
+  score?: number;
+  components?: Record<string, number>;
 }
 
 export interface GraphPathTrace {
-  nodes?: unknown[];
-  relations?: unknown[];
+  nodes?: GraphPathNode[];
+  relations?: GraphPathRelation[];
   rationale?: string;
   score?: number;
   storePath?: Record<string, unknown>;
   pathSource?: "neo4j" | "inferred" | string;
+  graphPathOperation?: "exact_expansion" | "candidate_retrieval" | string;
+  pathScoring?: GraphPathScoring;
+  scoreMeta?: ScoreMeta;
 }
 
 export interface RetrievalTrace {
@@ -102,6 +150,7 @@ export interface RetrievalTrace {
     inputKind?: InputKind;
     intent?: string;
     keywords?: string[];
+    codeFeatures?: CodeFeatures;
   };
   entityLinking: Array<Record<string, unknown>>;
   vectorCandidates: TraceCandidate[];
@@ -111,6 +160,7 @@ export interface RetrievalTrace {
   rerankerScores: TraceCandidate[];
   candidateSources?: Record<string, string>;
   providerSources?: Record<string, ProviderDescriptor>;
+  compatibilityWarnings?: CompatibilityWarning[];
   matchedProblem?: MatchedProblem;
 }
 
@@ -125,8 +175,12 @@ export interface EvidenceBundle {
   matchedProblem?: MatchedProblem;
 }
 
+export type AnalysisStatus = "ok" | "unsupported";
+
 export interface AnalysisResponse {
   queryId: string;
+  status: AnalysisStatus;
+  abstentionReason?: string;
   usedMockData: boolean;
   inputKind: InputKind;
   problemType: string;

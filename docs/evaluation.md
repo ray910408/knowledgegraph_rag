@@ -48,3 +48,22 @@ explainable recommendations than simpler baselines on a fixed dataset.
   trusting LLM prose.
 - The evaluation harness can compare vector-only, graph-only, and hybrid modes
   on the same fixture format.
+
+## Post-QA Regression Cases
+
+| Case | Expected contract |
+|---|---|
+| Backend stopped | The API returns an explicit error; it must not return a mock success response. |
+| Exact UVA query | `UVA-10653 - Bombs! NO they are Mines!!`, bare `10653`, and a partial UVA title resolve to canonical `matchedProblem.id=uva-10653`; chunk evidence covers statement, answer, and hints; graph evidence is canonical, operation-labeled, layered, typed, weighted, and path-scored. |
+| Equivalent BFS code | Equivalent C++ and Python BFS inputs link `BFS`, `Queue`, and `Visited Array` through `code_feature:*` IDs. C++ candidate chunk provenance is complete or identifies missing sources. |
+| Chinese BFS text | A Chinese BFS problem description remains supported and returns the corresponding concepts and evidence. |
+| Unrelated text | Dinner, weather, or MRT text returns `status=unsupported` with no BFS concepts, recommendations, or graph evidence. |
+| Whitespace input | Whitespace-only input is rejected as invalid input. |
+| Oversized input | A 96,000-character input returns HTTP `413` with `input_too_large`. |
+| Score labels | Every visible candidate and graph-path score has stage metadata; UI and evaluators do not compare values across scoring stages without that metadata. |
+| Identifier joins | Response records use canonical `id` and retain source-local `sourceId` where available. |
+
+Run the matrix with direct `TestClient` or contract-level checks before relying
+on browser results. Run the stores-mode configuration check without starting
+external Qdrant or Neo4j; before version alignment, debug diagnostics must make
+any store compatibility warning visible.

@@ -171,6 +171,20 @@ class RelationRecord:
 
 
 @dataclass(frozen=True)
+class ScoreMetadata:
+    stage: str
+    display_label: str
+    comparable_across_stages: bool = False
+
+    def to_mapping(self) -> JsonMap:
+        return {
+            "stage": self.stage,
+            "displayLabel": self.display_label,
+            "comparableAcrossStages": self.comparable_across_stages,
+        }
+
+
+@dataclass(frozen=True)
 class RetrievalTrace:
     query_understanding: JsonMap = field(default_factory=dict)
     entity_linking: list[JsonMap] = field(default_factory=list)

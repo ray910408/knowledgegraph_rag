@@ -6,15 +6,25 @@ from typing import Any, Literal, Sequence
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from .analysis import analyze_programming_input, build_query_id, load_programming_dataset
+from .analysis import (
+    analyze_programming_input,
+    build_query_id,
+    detect_input_kind,
+    has_explicit_problem_reference,
+    load_programming_dataset,
+)
 from .demo import build_demo_repositories, recommend_demo_techniques
+from .model_config import DEFAULT_RETRIEVAL_CONFIG, RetrievalModelConfig
 from .retrieval.pipeline import ContextBuilder, EvidenceBuilder
 from .retrieval.runtime import RuntimeRetrieval, add_runtime_debug_trace, build_runtime_retrieval
 
 
 RecommendationMode = Literal["hybrid", "vector", "graph"]
+MAX_ANALYSIS_INPUT_CHARS = 8000
+UNSUPPORTED_REASON = "No programming problem, code, concept, or retrieval evidence was detected."
 
 
 class RecommendationRequest(BaseModel):
@@ -110,6 +120,7 @@ class AnalysisRequest(BaseModel):
 class SimilarProblemResponse(BaseModel):
     source: str
     id: str
+    sourceId: str | None = None
     title: str
     reason: str
     sharedConcepts: list[str]
@@ -174,6 +185,8 @@ class MatchedProblemResponse(BaseModel):
 
 class AnalysisResponse(BaseModel):
     queryId: str
+    status: Literal["ok", "unsupported"] = "ok"
+    abstentionReason: str | None = None
     usedMockData: bool
     inputKind: Literal["problem", "cpp", "python", "unknown"]
     problemType: str
@@ -191,6 +204,16 @@ class AnalysisResponse(BaseModel):
     matchedProblem: MatchedProblemResponse | None = None
 
 
+class AnalysisInputTooLargeDetail(BaseModel):
+    code: Literal["input_too_large"]
+    maxLength: int
+    actualLength: int
+
+
+class AnalysisInputTooLargeResponse(BaseModel):
+    detail: AnalysisInputTooLargeDetail
+
+
 def _analysis_paths_from_graph_trace(
     paths: Sequence[object],
 ) -> list[AnalysisEvidencePathResponse]:
@@ -206,49 +229,101 @@ def _analysis_paths_from_graph_trace(
         if not isinstance(raw_relations, (list, tuple)) or not raw_relations:
             continue
 
-        nodes = [str(node) for node in raw_nodes]
-        relations = [str(relation) for relation in raw_relations]
+        nodes = [
+            node
+            for node in (
+                _graph_trace_node_response(raw_node)
+                for raw_node in raw_nodes
+            )
+            if node is not None
+        ]
         edge_count = len(nodes) - 1
-        if len(relations) != edge_count:
+        if edge_count < 1 or len(raw_relations) != edge_count:
             continue
 
-        try:
-            score = float(path.get("score", 0.0))
-        except (TypeError, ValueError, OverflowError):
-            score = 0.0
-        if not math.isfinite(score):
-            score = 0.0
+        score = _graph_trace_score(path.get("score", 0.0))
+        edges = [
+            _graph_trace_edge_response(
+                raw_relations[index],
+                from_id=nodes[index].id,
+                to=nodes[index + 1].id,
+                default_weight=score,
+            )
+            for index in range(edge_count)
+        ]
         source = str(path.get("pathSource") or "unknown")
         converted.append(
             AnalysisEvidencePathResponse(
                 title=f"Graph path {len(converted) + 1} ({source})",
-                nodes=[
-                    AnalysisEvidenceNodeResponse(
-                        id=node,
-                        label=node,
-                        type=_graph_trace_node_type(node),
-                    )
-                    for node in nodes
-                ],
-                edges=[
-                    AnalysisEvidenceEdgeResponse(
-                        **{
-                            "from": nodes[index],
-                            "to": nodes[index + 1],
-                            "relation": relations[index],
-                            "weight": score,
-                        }
-                    )
-                    for index in range(edge_count)
-                ],
+                nodes=nodes,
+                edges=edges,
             )
         )
     return converted
 
 
+def _graph_trace_node_response(node: object) -> AnalysisEvidenceNodeResponse | None:
+    if isinstance(node, Mapping):
+        node_id = str(node.get("id") or node.get("label") or "")
+        if not node_id:
+            return None
+        label = str(node.get("label") or node_id)
+        node_type = str(node.get("layer") or node.get("type") or _graph_trace_node_type(node_id))
+    else:
+        node_id = str(node)
+        if not node_id:
+            return None
+        label = node_id
+        node_type = _graph_trace_node_type(node_id)
+    return AnalysisEvidenceNodeResponse(id=node_id, label=label, type=node_type)
+
+
+def _graph_trace_edge_response(
+    relation: object,
+    *,
+    from_id: str,
+    to: str,
+    default_weight: float,
+) -> AnalysisEvidenceEdgeResponse:
+    if isinstance(relation, Mapping):
+        source = str(relation.get("source") or relation.get("from") or from_id)
+        target = str(relation.get("target") or relation.get("to") or to)
+        relation_type = str(relation.get("type") or relation.get("relation") or "")
+        weight = _graph_trace_score(relation.get("weight", default_weight))
+    else:
+        source = from_id
+        target = to
+        relation_type = str(relation)
+        weight = default_weight
+    return AnalysisEvidenceEdgeResponse(
+        **{
+            "from": source,
+            "to": target,
+            "relation": relation_type,
+            "weight": weight,
+        }
+    )
+
+
+def _graph_trace_score(value: object) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(score):
+        return 0.0
+    return score
+
+
 def _graph_trace_node_type(node: str) -> str:
     if node == "input":
         return "input"
+    if node.startswith("source:"):
+        return "source"
+    if node.startswith("chunk:"):
+        return "chunk"
+    if node.startswith("code_feature:") or node.startswith("code-feature:"):
+        return "code_feature"
     if node.startswith("concept:"):
         return "concept"
     if node.startswith("pattern:"):
@@ -280,6 +355,118 @@ def _runtime_retrieval() -> RuntimeRetrieval:
         runtime = build_runtime_retrieval()
         app.state.runtime_retrieval = runtime
     return runtime
+
+
+def _retrieval_config_response(
+    config: RetrievalModelConfig,
+    runtime_retrieval: RuntimeRetrieval,
+) -> RetrievalConfigResponse:
+    return RetrievalConfigResponse(
+        embeddingModel=config.embedding_model,
+        rerankerModel=config.reranker_model,
+        language=config.language,
+        embeddingProvider=_provider_descriptor_response(
+            runtime_retrieval.provider_sources.get("embedding")
+        ),
+        rerankerProvider=_provider_descriptor_response(
+            runtime_retrieval.provider_sources.get("reranker")
+        ),
+    )
+
+
+def _is_unsupported_analysis(
+    text: str,
+    input_kind: str,
+    pipeline_result: object,
+    evidence_mapping: Mapping[str, Any],
+    *,
+    has_explicit_reference: bool,
+) -> bool:
+    if has_explicit_reference or detect_input_kind(text) != "unknown":
+        return False
+    matched_problem = getattr(pipeline_result, "matched_problem", None)
+    if matched_problem is not None and getattr(matched_problem, "match_kind", None) != "partial_title":
+        return False
+    if matched_problem is not None:
+        return True
+    if input_kind != "unknown":
+        return False
+    trace = getattr(pipeline_result, "trace").to_mapping()
+    has_programming_signal = any(
+        trace.get(key)
+        for key in ("entityLinking", "graphCandidates")
+    )
+    has_graph_paths = bool(evidence_mapping.get("graphPaths"))
+    return not has_programming_signal and not has_graph_paths
+
+
+def _is_unsupported_result(result: object) -> bool:
+    return (
+        getattr(result, "input_kind", None) == "unknown"
+        and not getattr(result, "required_concepts", ())
+        and not getattr(result, "similar_problems", ())
+        and not getattr(result, "evidence_paths", ())
+    )
+
+
+def _unsupported_analysis_response(
+    *,
+    text: str,
+    input_kind: Literal["unknown"],
+    retrieval_config: RetrievalConfigResponse,
+    retrieval_backend: Literal["local", "stores"] | None,
+    retrieval_trace: dict[str, Any],
+    evidence_mapping: dict[str, Any],
+    debug: bool,
+    abstention_reason: str = UNSUPPORTED_REASON,
+) -> AnalysisResponse:
+    empty_trace = {
+        **retrieval_trace,
+        "entityLinking": [],
+        "vectorCandidates": [],
+        "graphCandidates": [],
+        "bm25Candidates": [],
+        "fusionScores": [],
+        "rerankerScores": [],
+        "matchedProblem": None,
+    }
+    empty_evidence = {
+        **evidence_mapping,
+        "similarProblems": [],
+        "graphPaths": [],
+        "algorithmEvidence": [],
+        "dataStructureEvidence": [],
+        "patternEvidence": [],
+        "techniqueEvidence": [],
+        "commonMistakes": [],
+        "matchedProblem": None,
+    }
+    return AnalysisResponse(
+        queryId=build_query_id(text, input_kind),
+        status="unsupported",
+        abstentionReason=abstention_reason,
+        usedMockData=False,
+        inputKind=input_kind,
+        problemType="",
+        requiredConcepts=[],
+        similarProblems=[],
+        similarityReason="",
+        solvingHints=[],
+        commonMistakes=[],
+        evidencePaths=[],
+        retrievalConfig=retrieval_config,
+        retrievalBackend=retrieval_backend if debug else None,
+        retrievalTrace=empty_trace,
+        evidenceBundle=empty_evidence,
+        contextPreview=None,
+        matchedProblem=None,
+    )
+
+
+def _unsupported_json_response(response: AnalysisResponse) -> JSONResponse:
+    payload = response.model_dump(mode="json", by_alias=True, exclude_none=True)
+    payload["matchedProblem"] = None
+    return JSONResponse(content=payload)
 
 
 @app.get("/api/v1/health")
@@ -329,18 +516,48 @@ def recommendations(request: RecommendationRequest) -> RecommendationResponse:
     )
 
 
-@app.post("/api/v1/analysis", response_model=AnalysisResponse, response_model_exclude_none=True)
-@app.post("/api/analysis", response_model=AnalysisResponse, response_model_exclude_none=True)
-def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
+@app.post(
+    "/api/v1/analysis",
+    response_model=AnalysisResponse,
+    response_model_exclude_none=True,
+    responses={
+        413: {
+            "model": AnalysisInputTooLargeResponse,
+            "description": "Analysis input exceeds the supported character limit.",
+        }
+    },
+)
+@app.post(
+    "/api/analysis",
+    response_model=AnalysisResponse,
+    response_model_exclude_none=True,
+    responses={
+        413: {
+            "model": AnalysisInputTooLargeResponse,
+            "description": "Analysis input exceeds the supported character limit.",
+        }
+    },
+)
+def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse | JSONResponse:
     resolved_problem_text = _analysis_problem_text(request.problem_id)
-    text = (
+    raw_text = (
         request.input
         or request.problem_text
         or request.statement
         or request.code
         or resolved_problem_text
         or ""
-    ).strip()
+    )
+    if len(raw_text) > MAX_ANALYSIS_INPUT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "input_too_large",
+                "maxLength": MAX_ANALYSIS_INPUT_CHARS,
+                "actualLength": len(raw_text),
+            },
+        )
+    text = raw_text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="input, problemText, statement, or code is required")
     retrieval_query = (
@@ -352,11 +569,10 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
         or resolved_problem_text
         or ""
     ).strip()
-
-    try:
-        result = analyze_programming_input(text)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    has_explicit_reference = has_explicit_problem_reference(
+        retrieval_query,
+        load_programming_dataset(),
+    )
 
     runtime_retrieval = _runtime_retrieval()
     pipeline_result = runtime_retrieval.pipeline.run(
@@ -370,6 +586,7 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
             retrieval_trace,
             runtime_retrieval.candidate_sources,
             runtime_retrieval.provider_sources,
+            runtime_retrieval.compatibility_warnings,
         )
     evidence_bundle = EvidenceBuilder().build(
         pipeline_result.reranked_candidates,
@@ -377,14 +594,58 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
         matched_problem=pipeline_result.matched_problem,
     )
     evidence_mapping = evidence_bundle.to_mapping()
+    input_kind = pipeline_result.query_understanding.input_kind
+    retrieval_config = _retrieval_config_response(
+        DEFAULT_RETRIEVAL_CONFIG,
+        runtime_retrieval,
+    )
+    if _is_unsupported_analysis(
+        text,
+        input_kind,
+        pipeline_result,
+        evidence_mapping,
+        has_explicit_reference=has_explicit_reference,
+    ):
+        return _unsupported_json_response(
+            _unsupported_analysis_response(
+                text=text,
+                input_kind="unknown",
+                retrieval_config=retrieval_config,
+                retrieval_backend=runtime_retrieval.backend,
+                retrieval_trace=retrieval_trace,
+                evidence_mapping=evidence_mapping,
+                debug=debug,
+            )
+        )
+
+    try:
+        result = analyze_programming_input(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if _is_unsupported_result(result):
+        return _unsupported_json_response(
+            _unsupported_analysis_response(
+                text=text,
+                input_kind="unknown",
+                retrieval_config=retrieval_config,
+                retrieval_backend=runtime_retrieval.backend,
+                retrieval_trace=retrieval_trace,
+                evidence_mapping=evidence_mapping,
+                debug=debug,
+                abstention_reason=result.similarity_reason,
+            )
+        )
+
     retrieval_evidence_paths = _analysis_paths_from_graph_trace(
         evidence_mapping["graphPaths"]
+    )
+    response_input_kind = (
+        "problem" if has_explicit_reference and input_kind == "unknown" else input_kind
     )
     context_preview = ContextBuilder().build(
         pipeline_result.query_understanding,
         evidence_bundle,
     )
-    input_kind = pipeline_result.query_understanding.input_kind
     matched_problem_ids = (
         {
             pipeline_result.matched_problem.problem_id,
@@ -395,9 +656,9 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
     )
 
     return AnalysisResponse(
-        queryId=build_query_id(text, input_kind),
+        queryId=build_query_id(text, response_input_kind),
         usedMockData=result.used_mock_data,
-        inputKind=input_kind,
+        inputKind=response_input_kind,
         problemType=result.problem_type,
         requiredConcepts=[
             RequiredConceptResponse(
@@ -415,43 +676,8 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse:
         similarityReason=result.similarity_reason,
         solvingHints=list(result.solving_hints),
         commonMistakes=list(result.common_mistakes),
-        evidencePaths=retrieval_evidence_paths
-        or [
-            AnalysisEvidencePathResponse(
-                title=path.title,
-                nodes=[
-                    AnalysisEvidenceNodeResponse(
-                        id=node.id,
-                        label=node.label,
-                        type=node.type,
-                    )
-                    for node in path.nodes
-                ],
-                edges=[
-                    AnalysisEvidenceEdgeResponse(
-                        **{
-                            "from": edge.from_id,
-                            "to": edge.to,
-                            "relation": edge.relation,
-                            "weight": edge.weight,
-                        }
-                    )
-                    for edge in path.edges
-                ],
-            )
-            for path in result.evidence_paths
-        ],
-        retrievalConfig=RetrievalConfigResponse(
-            embeddingModel=result.retrieval_config.embedding_model,
-            rerankerModel=result.retrieval_config.reranker_model,
-            language=result.retrieval_config.language,
-            embeddingProvider=_provider_descriptor_response(
-                runtime_retrieval.provider_sources.get("embedding")
-            ),
-            rerankerProvider=_provider_descriptor_response(
-                runtime_retrieval.provider_sources.get("reranker")
-            ),
-        ),
+        evidencePaths=retrieval_evidence_paths,
+        retrievalConfig=retrieval_config,
         retrievalBackend=runtime_retrieval.backend if debug else None,
         retrievalTrace=retrieval_trace,
         evidenceBundle=evidence_mapping,
@@ -482,14 +708,16 @@ def _similar_problem_responses_from_candidates(
         candidate_id = str(getattr(candidate, "id", ""))
         payload = getattr(candidate, "payload", {})
         payload_map = payload if isinstance(payload, Mapping) else {}
-        source_id = str(payload_map.get("sourceId") or candidate_id)
+        source_id_value = payload_map.get("sourceId") or payload_map.get("source_id")
+        source_id = str(source_id_value) if source_id_value else None
         if candidate_id in matched_problem_ids or source_id in matched_problem_ids:
             continue
         concepts = [str(concept) for concept in getattr(candidate, "concepts", ())]
         responses.append(
             SimilarProblemResponse(
                 source=str(payload_map.get("documentSource") or getattr(candidate, "source", "")),
-                id=source_id,
+                id=candidate_id,
+                sourceId=source_id,
                 title=str(getattr(candidate, "title", "")),
                 reason=_similar_problem_reason(concepts),
                 sharedConcepts=concepts,

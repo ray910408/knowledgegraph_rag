@@ -1,6 +1,9 @@
 import type {
   AnalysisRequest,
   AnalysisResponse,
+  ChunkEvidence,
+  CodeFeatures,
+  CompatibilityWarning,
   EvidenceBundle,
   EvidenceEdge,
   EvidenceNode,
@@ -12,6 +15,7 @@ import type {
   RequiredConcept,
   RetrievalConfig,
   RetrievalTrace,
+  ScoreMeta,
   SimilarProblem,
   TraceCandidate
 } from "./types";
@@ -94,10 +98,40 @@ const fallbackEvidence: EvidenceBundle = {
   ],
   graphPaths: [
     {
-      nodes: ["input", "concept:bfs", "uva-10653"],
-      relations: ["MENTIONS", "REQUIRED_BY"],
+      nodes: [
+        { id: "uva-10653", label: "Bombs! NO they are Mines!!", layer: "problem" },
+        { id: "source:uva:10653", label: "UVa 10653", layer: "source" },
+        { id: "concept:bfs", label: "BFS", layer: "concept" }
+      ],
+      relations: [
+        {
+          source: "uva-10653",
+          target: "source:uva:10653",
+          type: "EXPANDED_FROM_EXACT_MATCH",
+          weight: 1
+        },
+        {
+          source: "source:uva:10653",
+          target: "concept:bfs",
+          type: "MENTIONS_CONCEPT",
+          weight: 1
+        }
+      ],
       rationale: "前端 mock fallback 推論出的示意路徑，未來自 Neo4j。",
-      pathSource: "inferred"
+      score: 0.85,
+      pathSource: "inferred",
+      graphPathOperation: "exact_expansion",
+      pathScoring: {
+        strategy: "weighted_layered_path_v1",
+        score: 0.85,
+        components: {
+          minEdgeWeight: 1,
+          meanEdgeWeight: 1,
+          sourceBonus: 1,
+          featureOverlap: 0,
+          pathLengthPenalty: 0
+        }
+      }
     }
   ],
   algorithmEvidence: ["BFS"],
@@ -110,6 +144,7 @@ const fallbackEvidence: EvidenceBundle = {
 
 const fallbackResponse: AnalysisResponse = {
   queryId: "mock-graph-traversal",
+  status: "ok",
   usedMockData: true,
   inputKind: "problem",
   problemType: "Graph Traversal",
@@ -221,6 +256,17 @@ function asStringRecord(value: unknown): Record<string, string> | undefined {
   }
   const entries = Object.entries(record)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function asNumberRecord(value: unknown): Record<string, number> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const entries = Object.entries(record)
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
     .sort(([left], [right]) => left.localeCompare(right));
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
@@ -404,19 +450,99 @@ function normalizeProviderSources(value: unknown): Record<string, ProviderDescri
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+function normalizeCompatibilityWarning(value: unknown): CompatibilityWarning | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const adapter = asString(record.adapter, "");
+  const severity = asString(record.severity, "");
+  const message = asString(record.message, "");
+  if (!adapter || !severity || !message) {
+    return null;
+  }
+  return { adapter, severity, message };
+}
+
+function normalizeScoreMeta(value: unknown): ScoreMeta | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const stage = asString(record.stage, "");
+  const displayLabel = asString(record.displayLabel ?? record.display_label, "");
+  if (!stage || !displayLabel) {
+    return undefined;
+  }
+  const stageSpecificScoreStages = new Set([
+    "vector",
+    "graph",
+    "bm25",
+    "fusion",
+    "reranker",
+    "graph_path"
+  ]);
+  return {
+    stage,
+    displayLabel,
+    comparableAcrossStages:
+      !stageSpecificScoreStages.has(stage) &&
+      (record.comparableAcrossStages === true || record.comparable_across_stages === true)
+  };
+}
+
 function normalizeGraphPath(value: unknown): GraphPathTrace | null {
   const record = asRecord(value);
   if (!record) {
     return null;
   }
+  const pathScoring = asRecord(record.pathScoring ?? record.path_scoring);
   return {
-    nodes: Array.isArray(record.nodes) ? record.nodes : [],
-    relations: Array.isArray(record.relations) ? record.relations : [],
+    nodes: Array.isArray(record.nodes) ? (record.nodes as GraphPathTrace["nodes"]) : [],
+    relations: Array.isArray(record.relations) ? (record.relations as GraphPathTrace["relations"]) : [],
     rationale: asString(record.rationale, ""),
     score: typeof record.score === "number" && Number.isFinite(record.score) ? record.score : undefined,
+    scoreMeta: normalizeScoreMeta(record.scoreMeta ?? record.score_meta),
     storePath: asRecord(record.storePath ?? record.store_path) ?? undefined,
-    pathSource: asOptionalString(record.pathSource ?? record.path_source)
+    pathSource: asOptionalString(record.pathSource ?? record.path_source),
+    graphPathOperation: asOptionalString(record.graphPathOperation ?? record.graph_path_operation),
+    pathScoring: pathScoring
+      ? {
+          strategy: asOptionalString(pathScoring.strategy),
+          score:
+            typeof pathScoring.score === "number" && Number.isFinite(pathScoring.score)
+              ? pathScoring.score
+              : undefined,
+          components: asNumberRecord(pathScoring.components)
+        }
+      : undefined
   };
+}
+
+function normalizeChunkEvidence(value: unknown): ChunkEvidence | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  return {
+    available: record.available === true,
+    complete: record.complete === true,
+    missingSources: asStringArray(record.missingSources ?? record.missing_sources),
+    unavailableReason: asString(record.unavailableReason ?? record.unavailable_reason, "")
+  };
+}
+
+function normalizeCodeFeatures(value: unknown): CodeFeatures | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const language = asString(record.language, "");
+  const features = asStringArray(record.features);
+  if (!language && features.length === 0) {
+    return undefined;
+  }
+  return { language, features };
 }
 
 function normalizeCandidate(value: unknown, depth = 0): TraceCandidate | null {
@@ -425,6 +551,9 @@ function normalizeCandidate(value: unknown, depth = 0): TraceCandidate | null {
     return null;
   }
   const payload = asRecord(record.payload);
+  const chunkEvidence = payload
+    ? normalizeChunkEvidence(payload.chunkEvidence ?? payload.chunk_evidence)
+    : undefined;
   const rawChunks = payload && depth < MAX_RAW_CHUNK_DEPTH
     ? pickArray(payload, ["rawChunks", "raw_chunks"])
         .map((candidate) => normalizeCandidate(candidate, depth + 1))
@@ -438,14 +567,19 @@ function normalizeCandidate(value: unknown, depth = 0): TraceCandidate | null {
     score: asNumber(record.score, 0),
     concepts: asStringArray(record.concepts),
     problemType: asString(record.problemType ?? record.problem_type, ""),
+    scoreMeta: normalizeScoreMeta(record.scoreMeta ?? record.score_meta),
     payload: payload ?? undefined,
-    rawChunks: rawChunks.length > 0 ? rawChunks : undefined
+    rawChunks: rawChunks.length > 0 ? rawChunks : undefined,
+    chunkEvidence
   };
 }
 
 function normalizeTrace(value: unknown): RetrievalTrace {
   const record = asRecord(value) ?? {};
-  const queryUnderstanding = asRecord(record.queryUnderstanding) ?? fallbackTrace.queryUnderstanding;
+  const queryUnderstanding = asRecord(record.queryUnderstanding) ?? asRecord(fallbackTrace.queryUnderstanding) ?? {};
+  const codeFeatures = normalizeCodeFeatures(
+    firstPresent(queryUnderstanding, ["codeFeatures", "code_features"])
+  );
   const candidates = (key: string) =>
     pickArray(record, [key])
       .map(normalizeCandidate)
@@ -456,7 +590,8 @@ function normalizeTrace(value: unknown): RetrievalTrace {
       normalizedQuery: asString(queryUnderstanding.normalizedQuery, ""),
       inputKind: normalizeInputKind(queryUnderstanding.inputKind),
       intent: asString(queryUnderstanding.intent, "problem_search"),
-      keywords: asStringArray(queryUnderstanding.keywords)
+      keywords: asStringArray(queryUnderstanding.keywords),
+      codeFeatures
     },
     entityLinking: pickArray(record, ["entityLinking"]).filter((item): item is UnknownRecord => asRecord(item) !== null),
     vectorCandidates: candidates("vectorCandidates"),
@@ -466,6 +601,9 @@ function normalizeTrace(value: unknown): RetrievalTrace {
     rerankerScores: candidates("rerankerScores"),
     candidateSources: asStringRecord(firstPresent(record, ["candidateSources", "candidate_sources"])),
     providerSources: normalizeProviderSources(firstPresent(record, ["providerSources", "provider_sources"])),
+    compatibilityWarnings: pickArray(record, ["compatibilityWarnings", "compatibility_warnings"])
+      .map(normalizeCompatibilityWarning)
+      .filter((warning): warning is CompatibilityWarning => warning !== null),
     matchedProblem: normalizeMatchedProblem(firstPresent(record, ["matchedProblem", "matched_problem"]))
   };
 }
@@ -509,10 +647,20 @@ function mockFallback(request: AnalysisRequest): AnalysisResponse {
   };
 }
 
+function normalizeAnalysisStatus(value: unknown): "ok" | "unsupported" {
+  if (value === null || value === undefined) {
+    return "ok";
+  }
+  if (value === "ok" || value === "unsupported") {
+    return value;
+  }
+  invalidPayload("status must be ok or unsupported");
+}
+
 function normalizeResponse(payload: unknown, request: AnalysisRequest): AnalysisResponse {
   const record = asRecord(payload);
   if (!record) {
-    return mockFallback(request);
+    invalidPayload("response body is not an object");
   }
 
   const requiredConcepts = pickArray(record, ["requiredConcepts", "required_concepts", "concepts"])
@@ -523,16 +671,19 @@ function normalizeResponse(payload: unknown, request: AnalysisRequest): Analysis
     .filter((item): item is SimilarProblem => item !== null)
     .slice(0, request.topK);
   const matchedProblem = normalizeMatchedProblem(firstPresent(record, ["matchedProblem", "matched_problem"]));
+  const status = normalizeAnalysisStatus(record.status);
 
-  if (requiredConcepts.length === 0 || (similarProblems.length === 0 && !matchedProblem)) {
-    return mockFallback(request);
+  if (status === "ok" && (requiredConcepts.length === 0 || (similarProblems.length === 0 && !matchedProblem))) {
+    invalidPayload("ok response is missing required concepts or problem evidence");
   }
 
   return {
     queryId: asString(record.queryId ?? record.query_id ?? record.id, `api-${Date.now()}`),
+    status,
+    abstentionReason: asOptionalString(record.abstentionReason ?? record.abstention_reason),
     usedMockData: Boolean(record.usedMockData ?? record.used_mock_data ?? false),
     inputKind: normalizeInputKind(record.inputKind ?? record.input_kind),
-    problemType: asString(record.problemType ?? record.problem_type, "未知題型"),
+    problemType: asString(record.problemType ?? record.problem_type, status === "unsupported" ? "不支援的問題" : "程式問題"),
     requiredConcepts,
     similarProblems,
     similarityReason: asString(record.similarityReason ?? record.similarity_reason, ""),
@@ -547,6 +698,10 @@ function normalizeResponse(payload: unknown, request: AnalysisRequest): Analysis
     contextPreview: asOptionalString(firstPresent(record, ["contextPreview", "context_preview"])),
     matchedProblem
   };
+}
+
+function invalidPayload(message: string): never {
+  throw new Error(`invalid analysis API payload: ${message}`);
 }
 
 async function getApiErrorMessage(response: Response): Promise<string> {
@@ -581,20 +736,23 @@ export async function fetchAnalysis(request: AnalysisRequest): Promise<AnalysisR
       })
     });
   } catch {
-    return mockFallback(request);
-  }
-
-  if (response.status >= 400 && response.status < 500) {
-    throw new Error(await getApiErrorMessage(response));
+    throw new Error("analysis API is unavailable");
   }
 
   if (!response.ok) {
-    return mockFallback(request);
+    throw new Error(await getApiErrorMessage(response));
   }
 
+  let payload: unknown;
   try {
-    return normalizeResponse(await response.json(), request);
-  } catch {
-    return mockFallback(request);
+    payload = await response.json();
+  } catch (caughtError) {
+    invalidPayload(
+      caughtError instanceof Error && caughtError.message
+        ? caughtError.message
+        : "response body is not valid JSON"
+    );
   }
+
+  return normalizeResponse(payload, request);
 }

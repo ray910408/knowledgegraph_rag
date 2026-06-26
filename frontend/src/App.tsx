@@ -19,6 +19,8 @@ const sampleInput =
   "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。需要說明該使用哪些演算法與資料結構。";
 const emptyInputError = "請輸入題目、題號、關鍵字或程式碼。";
 
+const maxAnalysisInputChars = 8000;
+
 const modes: Array<{ id: RetrievalMode; label: string }> = [
   { id: "hybrid", label: "Hybrid" },
   { id: "vector", label: "Vector" },
@@ -64,6 +66,11 @@ function formatScore(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "-";
 }
 
+function formatLabeledScore(label: string | undefined, value: unknown): string {
+  const score = formatScore(value);
+  return label ? `${label}: ${score}` : score;
+}
+
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -75,6 +82,20 @@ function candidateKey(title: string, candidate: TraceCandidate, index: number): 
     .filter(Boolean)
     .join("|");
   return `${title}-${candidate.title ?? ""}-${candidate.id}-${storeCandidateId || rawChunkIds || index}`;
+}
+
+function chunkEvidenceBadge(candidate: TraceCandidate): string | null {
+  const evidence = candidate.chunkEvidence;
+  if (!evidence) {
+    return null;
+  }
+  if (evidence.complete) {
+    return "chunks complete";
+  }
+  if (evidence.missingSources.length > 0) {
+    return `missing ${evidence.missingSources.join(", ")}`;
+  }
+  return evidence.unavailableReason || (evidence.available ? "chunks incomplete" : "chunks unavailable");
 }
 
 function JsonBlock({ value }: { value: unknown }) {
@@ -117,6 +138,34 @@ function formatPathPart(value: unknown): string {
   return value.map(formatPathItem).filter(Boolean).join(" -> ") || "-";
 }
 
+function formatPathScoringComponents(components?: Record<string, number>): string {
+  if (!components) {
+    return "-";
+  }
+  const entries = Object.entries(components).filter(([, value]) => Number.isFinite(value));
+  if (entries.length === 0) {
+    return "-";
+  }
+  return entries.map(([key, value]) => `${key}=${formatScore(value)}`).join(", ");
+}
+
+function graphPathSourceLabel(source?: string): string {
+  if (source === "inferred") {
+    return "推論 fallback";
+  }
+  return source || "-";
+}
+
+function graphPathOperationLabel(operation?: string): string {
+  if (operation === "exact_expansion") {
+    return "精確展開";
+  }
+  if (operation === "candidate_retrieval") {
+    return "候選檢索";
+  }
+  return operation || "-";
+}
+
 export default function App() {
   const [inputText, setInputText] = useState(sampleInput);
   const [mode, setMode] = useState<RetrievalMode>("hybrid");
@@ -126,23 +175,27 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const latestRequestId = useRef(0);
+  const showResponseDetails = response?.status !== "unsupported";
 
   async function handleAnalyze() {
-    if (inputText.trim().length === 0) {
-      latestRequestId.current += 1;
+    const rawInput = inputText;
+    const trimmedInput = rawInput.trim();
+    const requestId = latestRequestId.current + 1;
+    latestRequestId.current = requestId;
+
+    if (trimmedInput.length === 0 && rawInput.length <= maxAnalysisInputChars) {
       setIsLoading(false);
       setResponse(null);
       setError(emptyInputError);
       return;
     }
 
-    const requestId = latestRequestId.current + 1;
-    latestRequestId.current = requestId;
     setIsLoading(true);
     setError(null);
+    setResponse(null);
 
     try {
-      const nextResponse = await fetchAnalysis({ inputText, mode, topK, debug });
+      const nextResponse = await fetchAnalysis({ inputText: rawInput, mode, topK, debug });
       if (requestId !== latestRequestId.current) {
         return;
       }
@@ -246,9 +299,13 @@ export default function App() {
 
         <section className="side-stack">
           <ModelPanel response={response} />
-          <EvidencePathPanel paths={response?.evidencePaths ?? []} />
-          <GraphPathsPanel paths={response?.evidenceBundle?.graphPaths ?? []} />
-          <ContextPanel contextPreview={response?.contextPreview} />
+          {showResponseDetails && (
+            <>
+              <EvidencePathPanel paths={response?.evidencePaths ?? []} />
+              <GraphPathsPanel paths={response?.evidenceBundle?.graphPaths ?? []} />
+              <ContextPanel contextPreview={response?.contextPreview} />
+            </>
+          )}
         </section>
       </section>
     </main>
@@ -265,6 +322,27 @@ function EmptyState() {
 }
 
 function AnalysisResult({ response }: { response: AnalysisResponse }) {
+  if (response.status === "unsupported") {
+    return (
+      <div className="analysis-result">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">分析結果</p>
+            <h2>暫不支援此輸入</h2>
+          </div>
+          <span className="query-id">{response.queryId}</span>
+        </div>
+
+        <OutputBlock title="系統已停止一般檢索流程">
+          <p>
+            {response.abstentionReason?.trim() ||
+              "這次輸入不屬於目前支援的程式題目分析範圍，未產生題目比對或圖檢索證據。"}
+          </p>
+        </OutputBlock>
+      </div>
+    );
+  }
+
   const trace = response.retrievalTrace;
   const evidence = response.evidenceBundle;
   const matchedProblem = response.matchedProblem ?? evidence?.matchedProblem ?? trace?.matchedProblem;
@@ -380,6 +458,7 @@ function FlowStrip() {
 function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
   const understanding = trace?.queryUnderstanding;
   const entities = trace?.entityLinking ?? [];
+  const codeFeatures = understanding?.codeFeatures?.features ?? [];
 
   return (
     <OutputBlock title="查詢理解">
@@ -396,6 +475,12 @@ function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
           <span>關鍵詞</span>
           <strong>{understanding?.keywords?.join(", ") || "-"}</strong>
         </div>
+        {codeFeatures.length > 0 && (
+          <div>
+            <span>程式特徵</span>
+            <strong>{codeFeatures.map((feature) => feature.replace(/_/g, " ")).join(", ")}</strong>
+          </div>
+        )}
       </div>
       <div className="chips">
         {entities.map((entity, index) => (
@@ -493,6 +578,9 @@ function CandidateList({ title, candidates }: { title: string; candidates: Trace
                 {candidate.concepts && candidate.concepts.length > 0 && (
                   <span>{candidate.concepts.slice(0, 5).join(", ")}</span>
                 )}
+                {chunkEvidenceBadge(candidate) && (
+                  <span className="source-pill">{chunkEvidenceBadge(candidate)}</span>
+                )}
                 {candidate.rawChunks && candidate.rawChunks.length > 0 && (
                   <details className="payload-details">
                     <summary>原始 chunks ({candidate.rawChunks.length})</summary>
@@ -506,7 +594,7 @@ function CandidateList({ title, candidates }: { title: string; candidates: Trace
                   </details>
                 )}
               </div>
-              <b>{formatScore(candidate.score)}</b>
+              <b>{formatLabeledScore(candidate.scoreMeta?.displayLabel, candidate.score)}</b>
             </li>
           ))}
         </ol>
@@ -685,11 +773,23 @@ function GraphPathsPanel({ paths }: { paths: GraphPathTrace[] }) {
               </div>
               <div>
                 <dt>分數</dt>
-                <dd>{formatScore(path.score)}</dd>
+                <dd>{formatLabeledScore(path.scoreMeta?.displayLabel, path.score)}</dd>
               </div>
               <div>
                 <dt>來源</dt>
-                <dd>{path.pathSource === "inferred" ? "推論 fallback" : (path.pathSource ?? "-")}</dd>
+                <dd>
+                  {graphPathSourceLabel(path.pathSource)} / {graphPathOperationLabel(path.graphPathOperation)}
+                </dd>
+              </div>
+              <div>
+                <dt>Path scoring</dt>
+                <dd>
+                  {path.pathScoring?.strategy ?? "-"} / {formatScore(path.pathScoring?.score)}
+                </dd>
+              </div>
+              <div>
+                <dt>Scoring components</dt>
+                <dd>{formatPathScoringComponents(path.pathScoring?.components)}</dd>
               </div>
             </dl>
             {path.storePath && (
