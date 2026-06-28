@@ -24,5 +24,6 @@ data/processed/*
 
 *.log
 
-docs/superpowers/*
+docs/plans/*
 *.png
+.omc/*
