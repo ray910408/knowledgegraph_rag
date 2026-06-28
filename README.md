@@ -11,8 +11,6 @@
 - [API contract](docs/api.md)
 - [資料 contract](docs/data-contract.md)
 - [Evaluation plan](docs/evaluation.md)
-- [Retrieval bug audit (2026-06-26)](docs/2026-06-26-retrieval-bug-audit.md)
-- [重構計畫](docs/Knowledge%20Graph%20+%20Hybrid%20RAG%20重構計畫.md)
 - [Scripts](scripts/README.md)
 
 ## 資料建庫流程
