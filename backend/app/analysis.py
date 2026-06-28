@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .model_config import DEFAULT_RETRIEVAL_CONFIG, RetrievalModelConfig
+from .query_language import detect_traversal_signal_labels
 
 
 InputKind = Literal["problem", "cpp", "python", "unknown"]
@@ -277,22 +278,7 @@ def has_supported_graph_traversal_signals(text: str) -> bool:
 
 
 def detect_graph_traversal_signals(text: str) -> tuple[str, ...]:
-    lowered = text.lower()
-    checks = (
-        ("BFS", ("bfs", "breadth first", "breadth-first")),
-        ("Queue", ("queue", "deque", "\u4f47\u5217", "\u968a\u5217")),
-        ("Visited Array", ("visited", "vis[", "\u62dc\u8a2a", "\u6a19\u8a18")),
-        (
-            "Unweighted shortest path",
-            ("unweighted", "\u7121\u6b0a", "shortest path", "\u6700\u77ed", "minimum steps"),
-        ),
-        ("Graph", ("graph", "node", "edge", "vertex", "\u5716", "\u7bc0\u9ede", "\u908a")),
-    )
-    signals: list[str] = []
-    for label, markers in checks:
-        if any(marker in lowered for marker in markers):
-            signals.append(label)
-    return tuple(signals)
+    return detect_traversal_signal_labels(text)
 
 
 def build_query_id(text: str, input_kind: InputKind) -> str:

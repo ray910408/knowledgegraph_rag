@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import math
-import re
 from collections import deque
 from typing import Sequence
 
 from ..contracts import EntityRecord, RelationRecord
+from ..query_language import shared_multilingual_tokens
 from ..stores import BM25Document, SearchCandidate, VectorRecord
 
 
@@ -123,4 +123,4 @@ def _matches_filters(payload: dict[str, object], filters: dict[str, object] | No
 
 
 def _tokens(text: str) -> tuple[str, ...]:
-    return tuple(re.findall(r"[a-z0-9]+", text.lower()))
+    return shared_multilingual_tokens(text)

@@ -1,36 +1,36 @@
-# API Contract
+# API 契約
 
-## Health
+## 健康檢查
 
 ```http
 GET /api/health
 GET /api/v1/health
 ```
 
-Response：
+回應：
 
 ```json
 { "status": "ok" }
 ```
 
-## Analysis
+## 分析 API
 
 ```http
 POST /api/analysis
 POST /api/v1/analysis
 ```
 
-Request body：
+請求內容：
 
 ```json
 {
-  "input": "unweighted graph shortest path BFS",
+  "input": "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。",
   "mode": "hybrid",
   "topK": 3
 }
 ```
 
-相容欄位：
+相容輸入欄位：
 
 ```text
 input
@@ -42,34 +42,26 @@ mode
 topK
 ```
 
-行為：
+行為規則：
 
 - 空輸入回 `400`。
-- 若指定 `problemId` 且不存在，回 `404`。
+- 若指定 `problemId` 且找不到，回 `404`。
 - 若沒有指定 `problemId`，一般文字會走 query search。
 - `mode` 可為 `hybrid`、`vector`、`graph`，預設 `hybrid`。
 - `topK` 控制最後候選數，預設 `5`。
-- `similarProblems` 來自所選 mode 的最後 reranked candidates；命中題目本身會放在 `matchedProblem`，不會重複出現在 `similarProblems`。
-- 當所選 mode 沒有相似候選時，`similarProblems` 會是空陣列，不會回退到無關的 demo 相似題。
+- `matchedProblem` 專門放 exact problem hit，不會重複塞進 `similarProblems`。
+- 當所選 mode 沒有相似候選時，`similarProblems` 會是空陣列，不會回退到無關的示意題目。
 
-Exact problem hits are returned as `matchedProblem` and are kept separate from
-`similarProblems`, so the canonical problem can be shown without polluting the
-practice recommendation list.
+## 分析回應
 
-### Analysis Response
+`status` 代表分析結果，不是 HTTP 錯誤碼：
 
-`status` is an analysis outcome, not an HTTP error indicator:
+- `ok`：後端找到了程式題、程式碼特徵、exact problem，或足夠的 retrieval evidence。
+- `unsupported`：刻意 abstain。此時 `requiredConcepts`、`similarProblems`、`evidencePaths`、`evidenceBundle.graphPaths` 會是空的，原因在 `abstentionReason`。
 
-- `ok` means the backend found a programming problem, submitted-code feature,
-  exact problem, or retrieval evidence that supports analysis.
-- `unsupported` is an intentional abstention. `requiredConcepts`,
-  `similarProblems`, `evidencePaths`, and `evidenceBundle.graphPaths` are empty;
-  `abstentionReason` explains why the input is outside the supported scope.
+過大的輸入會在分析前被拒絕，回 `413`，且 `detail.code` 會是 `input_too_large`。
 
-An oversized input is rejected before analysis with HTTP `413` and a `detail`
-object whose `code` is `input_too_large`.
-
-保留既有欄位：
+頂層欄位：
 
 ```text
 queryId
@@ -86,98 +78,143 @@ solvingHints
 commonMistakes
 evidencePaths
 retrievalConfig
-```
-
-新增可選欄位：
-
-```text
 retrievalTrace
 evidenceBundle
+```
+
+只有在 `debug=true` 才會多出：
+
+```text
 contextPreview
 retrievalBackend
 ```
 
-`retrievalTrace` and `evidenceBundle` are part of the normal analysis
-response. Only `contextPreview` and `retrievalBackend` are gated by
-`debug=true`.
+## `retrievalTrace.queryUnderstanding`
 
-`contextPreview` 只在 debug mode 回傳：
+`queryUnderstanding` 現在是多語查詢理解的主要輸出，欄位如下：
 
-```http
-POST /api/analysis?debug=true
+```text
+originalQuery
+normalizedQuery
+inputKind
+intent
+keywords
+queryLanguage
+exactTerms
+lowWeightTerms
+conceptSeeds
+expandedTerms
+queryVariants
+codeFeatures
 ```
 
-When present, it may include enriched evidence such as answer,
-solutionHints, difficulty, constraints, and graphPaths.
+說明：
 
-### Retrieval Trace
+- `queryLanguage`：`zh-Hant`、`en`、`mixed`。
+- `keywords`：供 trace 與檢索使用的實際關鍵詞，中文查詢會保留中文詞組。
+- `exactTerms`：從查詢中直接抓到的詞組或 alias。
+- `lowWeightTerms`：像 `給定`、`請`、`找出` 這類低權重提示詞。
+- `conceptSeeds`：依規則推導出的概念，例如 `BFS`、`Queue`、`Shortest Path`。
+- `expandedTerms`：加入英文 alias 後的擴展詞。
+- `queryVariants.bm25`：原始查詢加英文 alias。
+- `queryVariants.vector`：優先使用英文語意化改寫，否則退回擴展詞。
+- `queryVariants.graphSeeds`：圖檢索直接可用的 concept 或 pattern entity IDs。
+
+範例：
 
 ```json
 {
   "queryUnderstanding": {
-    "intent": "problem_search",
+    "originalQuery": "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。",
+    "normalizedQuery": "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。",
     "inputKind": "problem",
-    "keywords": ["unweighted", "graph", "shortest", "path", "bfs"]
-  },
-  "entityLinking": [],
-  "candidateSources": {
-    "vector": "qdrant",
-    "graph": "neo4j",
-    "bm25": "bm25_index"
-  },
-  "vectorCandidates": [
-    {
-      "id": "leetcode-994",
-      "source": "vector",
-      "candidateSource": "qdrant",
-      "payload": {
-        "title": "Rotting Oranges",
-        "documentSource": "LeetCode",
-        "sourceId": "994",
-        "answer": "Use BFS from all initially rotten oranges.",
-        "solutionHints": ["Push all sources first."],
-        "difficulty": "Medium",
-        "constraints": ["1 <= m, n <= 10"]
-      }
+    "intent": "problem_search",
+    "keywords": ["無權圖", "最短步數", "起點", "終點"],
+    "queryLanguage": "zh-Hant",
+    "exactTerms": ["無權圖", "最短步數", "起點", "終點"],
+    "lowWeightTerms": ["給定", "請", "找出", "從", "到"],
+    "conceptSeeds": ["Shortest Path", "BFS", "Graph Traversal", "Queue", "Visited Array"],
+    "expandedTerms": [
+      "unweighted graph",
+      "shortest path",
+      "shortest steps",
+      "BFS",
+      "breadth first search",
+      "breadth-first search",
+      "Queue",
+      "Visited Array",
+      "visited array",
+      "visited set",
+      "Graph Traversal",
+      "graph traversal",
+      "source",
+      "target",
+      "start",
+      "end"
+    ],
+    "queryVariants": {
+      "bm25": "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。 unweighted graph shortest path shortest steps BFS breadth first search breadth-first search Queue Visited Array visited array visited set Graph Traversal graph traversal source target start end",
+      "vector": "find the shortest path in an unweighted graph from source to target using bfs and a queue",
+      "graphSeeds": [
+        "concept:shortest-path",
+        "concept:bfs",
+        "pattern:graph-traversal",
+        "concept:queue",
+        "concept:visited-array"
+      ]
     }
-  ],
-  "graphCandidates": [
-    {
-      "id": "leetcode-994",
-      "source": "graph",
-      "candidateSource": "neo4j"
-    }
-  ],
-  "bm25Candidates": [
-    {
-      "id": "leetcode-994",
-      "source": "bm25",
-      "candidateSource": "bm25_index",
-      "payload": {
-        "title": "Rotting Oranges",
-        "documentSource": "LeetCode",
-        "sourceId": "994",
-        "answer": "Use BFS from all initially rotten oranges.",
-        "solutionHints": ["Push all sources first."],
-        "difficulty": "Medium",
-        "constraints": ["1 <= m, n <= 10"]
-      }
-    }
-  ],
-  "fusionScores": [],
-  "rerankerScores": []
+  }
 }
 ```
 
-`candidateSource` is only added when `debug=true`. Non-debug responses keep the
-existing `retrievalTrace` shape and omit `retrievalBackend`.
+## `entityLinking`
 
-Exact problem queries can also populate `retrievalTrace.matchedProblem` with
-the canonical `id`, `sourceId`, `matchKind`, `confidence`, and exact-problem
-evidence that seeded the final response.
+`entityLinking` 會整合三種來源：
 
-When available, debug traces also include `compatibilityWarnings` for bounded
-store-adapter diagnostics:
+- `matchedProblem`
+- 程式碼特徵對應的 `code_feature:*`
+- `queryVariants.graphSeeds` 直接帶入的概念種子
+
+其中 concept seed 連結會標上：
+
+```text
+matchedBy = concept_seed
+confidence = 1.0
+```
+
+程式碼特徵則會額外帶：
+
+```text
+matchedBy = code_feature
+codeFeatureNodeId
+```
+
+## 候選與 debug trace
+
+`retrievalTrace` 會包含：
+
+```text
+entityLinking
+vectorCandidates
+graphCandidates
+bm25Candidates
+fusionScores
+rerankerScores
+candidateSources
+providerSources
+compatibilityWarnings
+matchedProblem
+```
+
+注意事項：
+
+- `candidateSource` 只在 `debug=true` 時出現。
+- `vectorCandidates`、`bm25Candidates` 的 `payload` 可能包含 `answer`、`solutionHints`、`difficulty`、`constraints`、`examples`、`editorial`、`documentSource`、`sourceId`、`title`、`problemType`、`concepts`。
+- raw store payload 會保留在 `storePayload`。
+- `bm25Candidates` 只會保留 `score > 0` 的候選。
+- 所有候選與 graph path 的分數都會帶 `scoreMeta`，不同 stage 的分數不能直接互相比較。
+
+若有 store adapter 相容性診斷，debug trace 也會包含：
 
 ```json
 {
@@ -185,75 +222,50 @@ store-adapter diagnostics:
     {
       "adapter": "qdrant",
       "severity": "warning",
-      "message": "Qdrant client 1.18.0 is outside the supported server 1.15.3 minor range."
+      "message": "..."
     }
   ]
 }
 ```
 
-This field appears only with `debug=true`. It is diagnostic and non-fatal: a
-compatibility warning does not fail the request or change retrieval behavior.
+## `evidenceBundle`
 
-Debug candidates and graph paths include `scoreMeta`. Its `stage` and
-`displayLabel` identify the scoring stage, and `comparableAcrossStages` states
-whether that score can be compared with another stage. Candidate provenance can
-also include `chunkEvidence` with `available`, `complete`, `missingSources`,
-and `unavailableReason`.
+`evidenceBundle` 包含：
 
-Store-backed vector and BM25 normalized candidate `payload` values can include
-enriched fields such as answer, solutionHints, difficulty, constraints,
-examples, editorial, documentSource, sourceId, title, problemType, and concepts.
-Raw `storePayload` may retain the processed/store field name `source`.
-`stores` mode uses processed runtime documents from `PROCESSED_PROBLEMS_PATH`
-for the online candidate set.
-
-Store-backed graph paths use the same public shape as local graph paths:
-layered node and relation objects arranged as `problem -> source -> target`.
-When the graph store returns a raw path, the raw `nodes` and `relations` are
-preserved under `storePath`. Graph paths may also include `score`,
-`pathSource`, `graphPathOperation`, `pathScoring`, `scoreMeta`, and a
-`rationale` used by debug `contextPreview`.
-
-Each graph path identifies how it was produced with `graphPathOperation`:
-`candidate_retrieval` for a retrieved candidate path or `exact_expansion` for
-evidence expanded from an exact problem match. Nodes use the layers `problem`,
-`chunk`, `concept`, `code_feature`, `pattern`, and `source`. Each relation has a
-typed `type` and local-confidence `weight`. `pathScoring` uses
-`strategy=weighted_layered_path_v1` and supplies the path `score` plus its
-`components`; the top-level graph path `score` is the same value as
-`pathScoring.score`.
-
-### Evidence Bundle
-
-```json
-{
-  "similarProblems": [],
-  "graphPaths": [],
-  "algorithmEvidence": ["BFS"],
-  "dataStructureEvidence": ["Queue"],
-  "techniqueEvidence": ["Visited Array"],
-  "patternEvidence": ["Graph Traversal"],
-  "commonMistakes": [],
-  "matchedProblem": null
-}
+```text
+similarProblems
+graphPaths
+algorithmEvidence
+dataStructureEvidence
+techniqueEvidence
+patternEvidence
+commonMistakes
+matchedProblem
 ```
 
-`evidenceBundle.similarProblems` follows the same selected-mode candidate set
-as top-level `similarProblems`. `ContextBuilder` includes the `相似題` section
-only when this array is non-empty.
+用途：
 
-`techniqueEvidence` carries non-algorithm retrieval support such as
-`Visited Array` or state-tracking hints. When an exact problem is pinned, the
-same canonical record is also available as `evidenceBundle.matchedProblem` for
-debug surfaces that want the retrieval-layer view.
+- `similarProblems`：只來自所選 mode 的最後候選，不混入 exact match。
+- `graphPaths`：保留 `nodes`、`relations`、`pathSource`、`graphPathOperation`、`pathScoring`、`scoreMeta`。
+- `techniqueEvidence`：放 `Visited Array` 這種不是演算法名稱但很重要的技巧證據。
+- `matchedProblem`：exact problem 命中時，可在 evidence layer 再顯示一次同一筆 canonical record。
 
-### Example
+## Debug mode
 
-```powershell
-curl.exe -X POST "http://localhost:8000/api/analysis?debug=true" `
-  -H "Content-Type: application/json" `
-  -d "{\"input\":\"unweighted graph shortest path BFS\"}"
+啟用方式：
+
+```http
+POST /api/analysis?debug=true
 ```
+
+此時回應可額外帶：
+
+- `contextPreview`
+- `retrievalBackend`
+- `candidateSource`
+- `compatibilityWarnings`
+
+`contextPreview` 會使用 enriched payload 與 graph path rationale 組成 LLM prompt context。非 debug response 不會回傳它。
 
 ## Recommendations
 
@@ -262,7 +274,7 @@ POST /api/recommendations
 POST /api/v1/recommendations
 ```
 
-Request body：
+請求內容：
 
 ```json
 {
@@ -280,7 +292,7 @@ vector
 graph
 ```
 
-Recommendations endpoint 保留原 demo contract，避免破壞既有 frontend 與測試。
+Recommendations API 保留既有 demo 契約，避免破壞現有 frontend 與測試。
 
 ## Ingestion CLI
 
@@ -304,4 +316,4 @@ all
 python -m backend.app.ingestion build --input data/raw --processed data/processed --target all --allow-fallback
 ```
 
-當 target 需要 Qdrant 或 Neo4j 但服務不可用，且沒有傳入 `--allow-fallback`，CLI 會以非 0 exit code 失敗並提示啟動 Docker 或改用 fallback。
+若 target 需要 Qdrant 或 Neo4j，但服務不可用且沒有帶 `--allow-fallback`，CLI 會以非 0 exit code 明確失敗。

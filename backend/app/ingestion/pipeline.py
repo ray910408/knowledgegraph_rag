@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from ..contracts import EntityRecord, ProblemChunk, RawProblem, RelationRecord
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
+from ..query_language import build_search_text, concept_search_aliases, shared_multilingual_tokens
 from ..stores import GraphStore, VectorRecord, VectorStore
 
 
@@ -258,6 +259,7 @@ def _extract_entities_and_relations(
                 id=concept_id,
                 name=name,
                 type=_classify_concept(name),
+                aliases=concept_search_aliases((name,)),
                 problem_ids=tuple(sorted(concept_problem_ids[concept_id])),
                 metadata={"origin": "mock-extractor"},
             )
@@ -268,6 +270,7 @@ def _extract_entities_and_relations(
                 id=pattern_id,
                 name=name,
                 type="pattern",
+                aliases=concept_search_aliases((), problem_type=name),
                 problem_ids=tuple(sorted(pattern_problem_ids[pattern_id])),
                 metadata={"origin": "mock-extractor"},
             )
@@ -296,18 +299,17 @@ def _bm25_search_text(chunk: ProblemChunk) -> str:
     source_id = chunk.source_id or str(chunk.metadata.get("sourceId") or "")
     title = chunk.title or str(chunk.metadata.get("title") or "")
     problem_type = chunk.problem_type or str(chunk.metadata.get("problemType") or "")
-    parts = [
-        chunk.problem_id,
-        source,
-        source_id,
-        f"{source}-{source_id}" if source and source_id else "",
-        f"{source} {source_id}" if source and source_id else "",
-        title,
-        problem_type,
-        " ".join(chunk.concepts),
-        chunk.text,
-    ]
-    return _clean_text(" ".join(part for part in parts if part))
+    return _clean_text(
+        build_search_text(
+            problem_id=chunk.problem_id,
+            source=source,
+            source_id=source_id,
+            title=title,
+            problem_type=problem_type,
+            concepts=chunk.concepts,
+            display_text=chunk.text,
+        )
+    )
 
 
 def _build_qdrant_vectors(
@@ -317,7 +319,8 @@ def _build_qdrant_vectors(
     records: list[dict[str, Any]] = []
     vector_records: list[VectorRecord] = []
     for chunk in chunks:
-        vector = tuple(embedding_provider.embed_text(chunk.text))
+        search_text = _bm25_search_text(chunk)
+        vector = tuple(embedding_provider.embed_text(search_text))
         payload = chunk.to_mapping()
         records.append(
             {
@@ -365,4 +368,4 @@ def _classify_concept(name: str) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
+    return list(shared_multilingual_tokens(text))

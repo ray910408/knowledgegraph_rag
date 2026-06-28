@@ -1,19 +1,19 @@
-# Data Contract
+# 資料契約
 
-## Raw Problem Schema
+## 原始題目資料
 
-## Identifier Contract
+### 識別欄位
 
-`id` is the canonical cross-system identifier, for example `leetcode-1091` or
-`uva-10653`. `sourceId` is the source-local identifier, for example `1091` or
-`10653`, when that source provides one. Join records by canonical `id`; retain
-`sourceId` for display and source-specific references.
+- `id`：跨系統的 canonical identifier，例如 `leetcode-1091`、`uva-10653`
+- `sourceId`：來源站點自己的 identifier，例如 `1091`、`10653`
 
-`data/raw/*.json` 可放單一 object、array，或 `{ "problems": [...] }`。
+所有 join 都以 `id` 為主，`sourceId` 保留給顯示與來源站點參照。
 
-Repo 內建 `data/raw/programming_problems.json` 作為可執行的 seed fixture。這個檔案必須保持 UTF-8 readable zh-Hant，中文內容不要寫成 `\uXXXX` escape。
+`data/raw/*.json` 可以是單一 object、array，或 `{ "problems": [...] }`。
 
-必填欄位：
+Repo 內建 `data/raw/programming_problems.json` 作為可執行 seed fixture。檔案必須保持 UTF-8 可讀的繁體中文，不可把中文內容改寫成 `\uXXXX` escape。
+
+### 必填欄位
 
 ```text
 id
@@ -29,7 +29,7 @@ tags
 metadata
 ```
 
-可選欄位：
+### 可選欄位
 
 ```text
 difficulty
@@ -38,7 +38,7 @@ examples
 editorial
 ```
 
-範例：
+### 範例
 
 ```json
 {
@@ -64,7 +64,7 @@ editorial
 
 ### `problems.json`
 
-清理與標準化後的 raw problem。去重 key 為 `source + sourceId`。
+清理與標準化後的題目資料。去重 key 為 `source + sourceId`。
 
 ### `chunks.json`
 
@@ -99,6 +99,8 @@ hint
 editorial
 ```
 
+`text` 是乾淨的顯示文字。離線檢索用的 bilingual `searchText` 不會回寫覆蓋這個欄位。
+
 ### `entities.json`
 
 欄位：
@@ -121,6 +123,13 @@ data_structure
 pattern
 concept
 ```
+
+這個分支的 `aliases` 會加入雙語概念別名，例如：
+
+- `BFS`：`廣度優先搜尋`、`廣搜`、`breadth first search`
+- `Queue`：`佇列`、`隊列`
+- `Visited Array`：`拜訪陣列`、`visited 陣列`、`visited set`
+- `Graph Traversal`：`圖論遍歷`、`圖遍歷`
 
 ### `relations.json`
 
@@ -145,9 +154,23 @@ HAS_PATTERN
 
 ### `bm25_index.json`
 
-本地 BM25 artifact，包含 documents、tokens 與 chunk payload。
+每個 document 會包含：
 
-BM25 document payloads include the enriched evidence fields used at runtime:
+```text
+id
+text
+problemId
+tokens
+payload
+```
+
+欄位意義：
+
+- `text`：離線組出的 bilingual `searchText`，包含 `problemId`、`source`、`sourceId`、`title`、`problemType`、`concepts`、concept alias、原始 chunk 顯示文字。
+- `tokens`：由 `shared_multilingual_tokens()` 產生，會先保留中文精確詞組，再補 ASCII tokens。
+- `payload`：原始 chunk mapping，保留乾淨顯示內容與 enriched evidence 欄位。
+
+`payload` 會帶：
 
 ```text
 answer
@@ -163,9 +186,7 @@ problemType
 concepts
 ```
 
-This is the raw BM25 artifact/store payload shape. Normalized retrieval
-candidate `payload` maps `source` to `documentSource`; `storePayload` retains
-`source`.
+對外正規化後，候選 `payload.source` 會映射成 `documentSource`，原始 store 內容則保留在 `storePayload`。
 
 ### `qdrant_vectors.json`
 
@@ -184,25 +205,11 @@ vector
 payload
 ```
 
-Qdrant payload includes chunk identity plus enriched evidence fields:
+注意：
 
-```text
-answer
-solutionHints
-difficulty
-constraints
-examples
-editorial
-source
-sourceId
-title
-problemType
-concepts
-```
-
-This is the raw Qdrant artifact/store payload shape. Normalized retrieval
-candidate `payload` maps `source` to `documentSource`; `storePayload` retains
-`source`.
+- 向量不是對 `chunk.text` 直接做 embedding。
+- 向量是對跟 BM25 相同的 bilingual `searchText` 做 embedding。
+- `payload` 仍保留 chunk 原始欄位，供前端顯示與證據整理使用。
 
 ### `neo4j_graph.json`
 
@@ -213,9 +220,9 @@ entities
 relations
 ```
 
-這份 artifact 可作為 Neo4j import/debug 的中介格式。
+這份 artifact 可作為 Neo4j import 與 debug 的中介格式。
 
-## Retrieval Trace Contract
+## `retrievalTrace` 契約
 
 `retrievalTrace` 包含：
 
@@ -233,46 +240,100 @@ compatibilityWarnings
 matchedProblem
 ```
 
-`matchedProblem` appears when exact problem ID, source ID, or title matching
-pins a canonical problem separately from the reranked similar-problem list.
+### `queryUnderstanding`
 
-Store-backed candidates can include store metadata in each candidate payload:
+`queryUnderstanding` 內含：
 
 ```text
+originalQuery
+normalizedQuery
+inputKind
+intent
+keywords
+queryLanguage
+exactTerms
+lowWeightTerms
+conceptSeeds
+expandedTerms
+queryVariants
+codeFeatures
+```
+
+其中 `queryVariants` 再包含：
+
+```text
+bm25
+vector
+graphSeeds
+```
+
+契約重點：
+
+- `keywords` 對中文查詢會保留中文詞組，不只剩 ASCII token。
+- `queryLanguage` 會明確標示 `zh-Hant`、`en`、`mixed`。
+- `graphSeeds` 是 entity IDs，例如 `concept:bfs`、`concept:queue`、`pattern:graph-traversal`。
+- 所有擴展都是 additive，不會用翻譯結果覆蓋原始查詢。
+
+### `entityLinking`
+
+`entityLinking` 每筆可能帶：
+
+```text
+entityId
+name
+type
+confidence
+matchKind
+matchedBy
+codeFeatureNodeId
+```
+
+`matchedBy` 可能值：
+
+```text
+concept_seed
+code_feature
+```
+
+### 候選 payload 與 provenance
+
+store 模式候選的 `payload` 可能包含：
+
+```text
+documentSource
+sourceId
+answer
+solutionHints
+difficulty
+constraints
+examples
+editorial
+title
+problemType
+concepts
 storeCandidateId
 storePayload
+chunkEvidence
 ```
 
-`candidateSources` and `providerSources` are optional diagnostics that describe
-the active physical retrievers and model/provider wiring. When present,
-`compatibilityWarnings` carries bounded adapter warnings surfaced by debug mode.
-
-Scores are stage-specific. Candidate and graph-path scores include `scoreMeta`;
-consumers must inspect it before comparing values. In particular, BM25, vector,
-graph path, fusion, and reranker scores are not relevance-comparable merely
-because they are numeric.
-
-Candidate provenance can include:
+`chunkEvidence` 內含：
 
 ```text
-chunkEvidence.available
-chunkEvidence.complete
-chunkEvidence.missingSources
-chunkEvidence.unavailableReason
+available
+complete
+missingSources
+unavailableReason
 ```
 
-`complete=true` means all contributing retrieval sources supplied usable chunk
-provenance. `missingSources` lists the contributing sources whose provenance is
-absent or incomplete; it is empty only when no source is missing. Consumers
-should not imply complete source evidence when `complete=false`.
+`bm25Candidates` 只保留 `score > 0` 的候選，避免零分列也進入 fusion。
 
-Vector and BM25 normalized candidate `payload` values can include enriched
-evidence fields such as `answer`, `solutionHints`, `difficulty`, `constraints`,
-`examples`, `editorial`, `documentSource`, `sourceId`, `title`, `problemType`,
-and `concepts`. Raw `storePayload` values retain the processed/store field
-name `source` instead of `documentSource`.
+### 分數契約
 
-Store-backed graph paths preserve both the stable summary and the raw store path:
+候選與 graph path 的分數都會附帶 `scoreMeta`。呼叫端必須先看 `scoreMeta.stage` 與 `scoreMeta.comparableAcrossStages`，不能把 BM25、vector、graph path、fusion、reranker 分數直接混比。
+
+## Graph Path 契約
+
+store 模式 graph path 會同時保留穩定形狀與原始路徑：
 
 ```json
 {
@@ -315,9 +376,16 @@ Store-backed graph paths preserve both the stable summary and the raw store path
 }
 ```
 
-## Analysis Response Contract
+規則：
 
-Top-level analysis responses always include:
+- `nodes` / `relations`：穩定的 public shape。
+- `storePath`：保留 Neo4j 原始路徑。
+- `graphPathOperation`：`candidate_retrieval` 或 `exact_expansion`。
+- node layer 可為 `problem`、`chunk`、`concept`、`code_feature`、`pattern`、`source`。
+
+## 分析回應契約
+
+頂層分析回應固定包含：
 
 ```text
 queryId
@@ -338,12 +406,16 @@ retrievalTrace
 evidenceBundle
 ```
 
-`contextPreview` and `retrievalBackend` are debug-only additions. `status`
-distinguishes successful analysis from intentional abstention, and
-`matchedProblem` carries exact canonical problem hits separately from
-`similarProblems`.
+只有 `debug=true` 時才會多出：
 
-## Evidence Bundle Contract
+```text
+contextPreview
+retrievalBackend
+```
+
+`matchedProblem` 代表 exact canonical problem hit，會跟 `similarProblems` 分開。
+
+## `evidenceBundle` 契約
 
 `evidenceBundle` 包含：
 
@@ -358,33 +430,19 @@ commonMistakes
 matchedProblem
 ```
 
-`similarProblems` is built from the final selected retrieval mode candidate
-set. Exact matched problems are represented separately as `matchedProblem` and
-are excluded from `similarProblems`.
+重點：
 
-`graphPaths` entries can include `nodes`, `relations`, `score`, `rationale`,
-`storePath`, `pathSource`, `graphPathOperation`, `pathScoring`, and `scoreMeta`.
-`storePath` preserves the raw store-returned nodes and relations while
-`nodes` / `relations` keep the stable display summary. `pathSource` explains
-whether the path came from Neo4j or inferred fallback evidence, and
-`graphPathOperation` distinguishes retrieved candidate paths from exact-match
-expansion paths.
+- `similarProblems` 只來自最終 selected-mode candidates。
+- `graphPaths` 可帶 `nodes`、`relations`、`score`、`rationale`、`storePath`、`pathSource`、`graphPathOperation`、`pathScoring`、`scoreMeta`。
+- `techniqueEvidence` 會放 `Visited Array` 這類技巧證據。
 
-Graph paths cross a reference boundary with layered nodes (`problem`, `chunk`,
-`concept`, `code_feature`, `pattern`, `source`) and typed, weighted relations.
-Their deterministic scoring uses `pathScoring` with
-`strategy=weighted_layered_path_v1`; graph path `score` equals
-`pathScoring.score`. Relation weights express local edge confidence only and
-are not interchangeable with BM25, vector, fusion, reranker, or graph-path
-retrieval scores.
+## `contextPreview` 契約
 
-## Context Preview Contract
+`contextPreview` 是送入 `LLMProvider` 前整理好的 prompt context，只在 `debug=true` 時回傳。
 
-`contextPreview` 是送入 `LLMProvider` 前整理好的 prompt context。它只會在 `debug=true` 時回傳。
+它可能使用：
 
-The context builder can use enriched candidate payload fields such as `answer`,
-`solutionHints`, `difficulty`, and `constraints`, plus graph path `rationale`.
-Non-debug responses omit `contextPreview`.
+- enriched candidate payload 的 `answer`、`solutionHints`、`difficulty`、`constraints`
+- graph path 的 `rationale`
 
-When `similarProblems` is empty, `ContextBuilder` omits the `相似題` section
-instead of emitting an empty heading.
+當 `similarProblems` 為空時，`ContextBuilder` 會直接省略 `相似題` 區段，不會輸出空標題。
