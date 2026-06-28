@@ -131,6 +131,60 @@ def test_app_renders_graph_path_scoring_metadata():
     assert "function formatPathScoringComponents" in source
 
 
+def test_touched_files_use_utf8_without_bom_and_keep_zh_hant_retrieval_copy():
+    app_bytes = APP_TSX.read_bytes()
+    test_bytes = Path(__file__).read_bytes()
+    source = app_bytes.decode("utf-8")
+
+    assert not app_bytes.startswith(b"\xef\xbb\xbf")
+    assert not test_bytes.startswith(b"\xef\xbb\xbf")
+    assert "<p className=\"eyebrow\">模型設定</p>" in source
+    assert "<p className=\"eyebrow\">圖證據</p>" in source
+    assert "<p className=\"muted\">尚無證據路徑。</p>" in source
+    assert "<p className=\"eyebrow\">圖路徑追蹤</p>" in source
+    assert "<p className=\"muted\">沒有圖路徑。</p>" in source
+    assert "<dt>節點</dt>" in source
+    assert "<dt>關係</dt>" in source
+    assert "<dt>依據</dt>" in source
+    assert "<dt>分數</dt>" in source
+    assert "<dt>來源</dt>" in source
+    assert "<p className=\"muted\">Debug mode 關閉。</p>" in source
+    assert 'rightTitle="常見錯誤"' in source
+
+
+def test_retrieval_panel_limits_hybrid_status_to_hybrid_like_traces():
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    api_source = API_TS.read_text(encoding="utf-8")
+    start = app_source.index("function RetrievalPanel")
+    end = app_source.index("function FusionPanel", start)
+    retrieval_body = app_source[start:end]
+
+    assert 'label: "Hybrid"' in app_source
+    assert 'const [mode, setMode] = useState<RetrievalMode>("hybrid");' in app_source
+    assert 'title="三路檢索"' in retrieval_body
+    assert 'title="向量搜尋 / Qdrant"' in retrieval_body
+    assert 'title="圖搜尋 / Neo4j"' in retrieval_body
+    assert 'title="BM25 關鍵字搜尋"' in retrieval_body
+    assert 'value === "hybrid"' not in api_source
+    assert 'status must be ok or unsupported' in api_source
+
+
+def test_matched_problem_panel_surfaces_problem_specific_common_mistakes():
+    source = APP_TSX.read_text(encoding="utf-8")
+
+    unsupported_branch_index = source.index('if (response.status === "unsupported")')
+    matched_problem_index = source.index("<MatchedProblemPanel problem={matchedProblem} />")
+    common_mistakes_index = source.index('rightTitle="常見錯誤"', matched_problem_index)
+    evidence_common_mistakes_index = source.index(
+        '<EvidenceList title="常見錯誤" items={evidence.commonMistakes} />'
+    )
+
+    assert unsupported_branch_index < matched_problem_index < common_mistakes_index
+    assert 'rightItems={response.commonMistakes}' in source
+    assert evidence_common_mistakes_index > matched_problem_index
+    assert 'rightTitle="Common mistakes"' not in source
+
+
 def test_frontend_fallback_graph_path_uses_current_scoring_contract():
     source = API_TS.read_text(encoding="utf-8")
 

@@ -11,6 +11,7 @@
 - [API contract](docs/api.md)
 - [資料 contract](docs/data-contract.md)
 - [Evaluation plan](docs/evaluation.md)
+- [Retrieval bug audit (2026-06-26)](docs/2026-06-26-retrieval-bug-audit.md)
 - [重構計畫](docs/Knowledge%20Graph%20+%20Hybrid%20RAG%20重構計畫.md)
 - [Scripts](scripts/README.md)
 
@@ -152,9 +153,11 @@ POST /api/v1/recommendations
 `POST /api/analysis` 保留既有 response 欄位，並新增可選 debug 欄位：
 
 ```text
+status
+matchedProblem
 retrievalTrace
 evidenceBundle
-contextPreview
+contextPreview (debug only)
 ```
 
 `/api/analysis` also accepts retrieval controls:

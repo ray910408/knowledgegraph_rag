@@ -227,7 +227,14 @@ graphCandidates
 bm25Candidates
 fusionScores
 rerankerScores
+candidateSources
+providerSources
+compatibilityWarnings
+matchedProblem
 ```
+
+`matchedProblem` appears when exact problem ID, source ID, or title matching
+pins a canonical problem separately from the reranked similar-problem list.
 
 Store-backed candidates can include store metadata in each candidate payload:
 
@@ -235,6 +242,10 @@ Store-backed candidates can include store metadata in each candidate payload:
 storeCandidateId
 storePayload
 ```
+
+`candidateSources` and `providerSources` are optional diagnostics that describe
+the active physical retrievers and model/provider wiring. When present,
+`compatibilityWarnings` carries bounded adapter warnings surfaced by debug mode.
 
 Scores are stage-specific. Candidate and graph-path scores include `scoreMeta`;
 consumers must inspect it before comparing values. In particular, BM25, vector,
@@ -265,15 +276,72 @@ Store-backed graph paths preserve both the stable summary and the raw store path
 
 ```json
 {
-  "nodes": ["input", "concept:bfs", "leetcode-994"],
-  "relations": ["MENTIONS", "REQUIRED_BY"],
-  "rationale": "BFS is linked to the matching problem through the graph store.",
+  "nodes": [
+    { "id": "uva-10653", "label": "Bombs! NO they are Mines!!", "layer": "problem" },
+    { "id": "source:uva:10653", "label": "UVa 10653", "layer": "source" },
+    { "id": "concept:bfs", "label": "BFS", "layer": "concept" }
+  ],
+  "relations": [
+    {
+      "source": "uva-10653",
+      "target": "source:uva:10653",
+      "type": "EXPANDED_FROM_EXACT_MATCH",
+      "weight": 1.0
+    },
+    {
+      "source": "source:uva:10653",
+      "target": "concept:bfs",
+      "type": "MENTIONS_CONCEPT",
+      "weight": 1.0
+    }
+  ],
+  "score": 0.85,
+  "rationale": "Inferred from document concepts for the exact matched problem.",
+  "pathSource": "inferred",
+  "graphPathOperation": "exact_expansion",
+  "pathScoring": {
+    "strategy": "weighted_layered_path_v1",
+    "score": 0.85
+  },
+  "scoreMeta": {
+    "stage": "graph_path",
+    "displayLabel": "Graph path confidence",
+    "comparableAcrossStages": false
+  },
   "storePath": {
-    "nodes": ["leetcode-994", "concept:bfs"],
+    "nodes": ["uva-10653", "concept:bfs"],
     "relations": ["REQUIRES"]
   }
 }
 ```
+
+## Analysis Response Contract
+
+Top-level analysis responses always include:
+
+```text
+queryId
+status
+abstentionReason
+usedMockData
+inputKind
+problemType
+requiredConcepts
+matchedProblem
+similarProblems
+similarityReason
+solvingHints
+commonMistakes
+evidencePaths
+retrievalConfig
+retrievalTrace
+evidenceBundle
+```
+
+`contextPreview` and `retrievalBackend` are debug-only additions. `status`
+distinguishes successful analysis from intentional abstention, and
+`matchedProblem` carries exact canonical problem hits separately from
+`similarProblems`.
 
 ## Evidence Bundle Contract
 
@@ -284,17 +352,23 @@ similarProblems
 graphPaths
 algorithmEvidence
 dataStructureEvidence
+techniqueEvidence
 patternEvidence
 commonMistakes
+matchedProblem
 ```
 
 `similarProblems` is built from the final selected retrieval mode candidate
 set. Exact matched problems are represented separately as `matchedProblem` and
 are excluded from `similarProblems`.
 
-`graphPaths` entries can include `nodes`, `relations`, `rationale`, and
-`storePath`. `storePath` preserves the raw store-returned nodes and relations
-while `nodes` / `relations` keep the stable display summary.
+`graphPaths` entries can include `nodes`, `relations`, `score`, `rationale`,
+`storePath`, `pathSource`, `graphPathOperation`, `pathScoring`, and `scoreMeta`.
+`storePath` preserves the raw store-returned nodes and relations while
+`nodes` / `relations` keep the stable display summary. `pathSource` explains
+whether the path came from Neo4j or inferred fallback evidence, and
+`graphPathOperation` distinguishes retrieved candidate paths from exact-match
+expansion paths.
 
 Graph paths cross a reference boundary with layered nodes (`problem`, `chunk`,
 `concept`, `code_feature`, `pattern`, `source`) and typed, weighted relations.

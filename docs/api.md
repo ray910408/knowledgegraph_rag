@@ -52,6 +52,10 @@ topK
 - `similarProblems` 來自所選 mode 的最後 reranked candidates；命中題目本身會放在 `matchedProblem`，不會重複出現在 `similarProblems`。
 - 當所選 mode 沒有相似候選時，`similarProblems` 會是空陣列，不會回退到無關的 demo 相似題。
 
+Exact problem hits are returned as `matchedProblem` and are kept separate from
+`similarProblems`, so the canonical problem can be shown without polluting the
+practice recommendation list.
+
 ### Analysis Response
 
 `status` is an analysis outcome, not an HTTP error indicator:
@@ -69,10 +73,13 @@ object whose `code` is `input_too_large`.
 
 ```text
 queryId
+status
+abstentionReason
 usedMockData
 inputKind
 problemType
 requiredConcepts
+matchedProblem
 similarProblems
 similarityReason
 solvingHints
@@ -89,6 +96,10 @@ evidenceBundle
 contextPreview
 retrievalBackend
 ```
+
+`retrievalTrace` and `evidenceBundle` are part of the normal analysis
+response. Only `contextPreview` and `retrievalBackend` are gated by
+`debug=true`.
 
 `contextPreview` 只在 debug mode 回傳：
 
@@ -161,6 +172,10 @@ solutionHints, difficulty, constraints, and graphPaths.
 `candidateSource` is only added when `debug=true`. Non-debug responses keep the
 existing `retrievalTrace` shape and omit `retrievalBackend`.
 
+Exact problem queries can also populate `retrievalTrace.matchedProblem` with
+the canonical `id`, `sourceId`, `matchKind`, `confidence`, and exact-problem
+evidence that seeded the final response.
+
 When available, debug traces also include `compatibilityWarnings` for bounded
 store-adapter diagnostics:
 
@@ -192,10 +207,12 @@ Raw `storePayload` may retain the processed/store field name `source`.
 `stores` mode uses processed runtime documents from `PROCESSED_PROBLEMS_PATH`
 for the online candidate set.
 
-Store-backed graph paths use the same display summary as local graph paths:
-`input -> linked entity -> problem`. When the graph store returns a raw path, the
-raw `nodes` and `relations` are preserved under `storePath`. Graph paths may
-also include a `rationale` used by debug `contextPreview`.
+Store-backed graph paths use the same public shape as local graph paths:
+layered node and relation objects arranged as `problem -> source -> target`.
+When the graph store returns a raw path, the raw `nodes` and `relations` are
+preserved under `storePath`. Graph paths may also include `score`,
+`pathSource`, `graphPathOperation`, `pathScoring`, `scoreMeta`, and a
+`rationale` used by debug `contextPreview`.
 
 Each graph path identifies how it was produced with `graphPathOperation`:
 `candidate_retrieval` for a retrieved candidate path or `exact_expansion` for
@@ -214,14 +231,21 @@ typed `type` and local-confidence `weight`. `pathScoring` uses
   "graphPaths": [],
   "algorithmEvidence": ["BFS"],
   "dataStructureEvidence": ["Queue"],
+  "techniqueEvidence": ["Visited Array"],
   "patternEvidence": ["Graph Traversal"],
-  "commonMistakes": []
+  "commonMistakes": [],
+  "matchedProblem": null
 }
 ```
 
 `evidenceBundle.similarProblems` follows the same selected-mode candidate set
 as top-level `similarProblems`. `ContextBuilder` includes the `相似題` section
 only when this array is non-empty.
+
+`techniqueEvidence` carries non-algorithm retrieval support such as
+`Visited Array` or state-tracking hints. When an exact problem is pinned, the
+same canonical record is also available as `evidenceBundle.matchedProblem` for
+debug surfaces that want the retrieval-layer view.
 
 ### Example
 
