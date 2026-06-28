@@ -12,8 +12,11 @@ from backend.app.ingestion.pipeline import (
     _write_bm25_index as write_ingestion_bm25_index,
 )
 from backend.app.providers import DeterministicMockEmbeddingProvider
+from backend.app.retrieval.pipeline import QueryUnderstandingService
 from backend.app.retrieval.pipeline import RetrievalDocument
 from backend.app.stores import BM25Document, SearchCandidate
+
+CHINESE_SHORTEST_PATH_QUERY = "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
 
 
 def _documents() -> tuple[RetrievalDocument, ...]:
@@ -260,17 +263,42 @@ def test_json_bm25_store_matches_problem_alias_text(tmp_path):
     write_ingestion_bm25_index(index_path, (chunk,))
 
     artifact = json.loads(index_path.read_text(encoding="utf-8"))
-    assert artifact["documents"][0]["text"] == (
+    search_text = artifact["documents"][0]["text"]
+    assert search_text.startswith(
         "uva-10653 UVa 10653 UVa-10653 UVa 10653 "
         "Bombs! NO they are Mines!! Graph Traversal "
         "BFS Queue Visited Array "
-        "Find the shortest safe path on a grid with bomb cells."
     )
+    for needle in (
+        "graph traversal",
+        "圖論遍歷",
+        "圖遍歷",
+        "廣搜",
+        "廣度優先搜尋",
+        "佇列",
+        "拜訪陣列",
+    ):
+        assert needle in search_text
+    assert search_text.endswith("Find the shortest safe path on a grid with bomb cells.")
 
     store = JsonBM25Store.from_path(index_path)
     results = store.search("UVA-10653 - Bombs! NO they are Mines!!", top_k=1)
 
     assert results[0].id == chunk.id
+    assert results[0].score > 0
+
+
+def test_json_bm25_store_matches_multilingual_bm25_query_variant(tmp_path):
+    from backend.app.retrieval.runtime import JsonBM25Store
+
+    index_path = tmp_path / "bm25_index.json"
+    _write_bm25_index(index_path)
+
+    understanding = QueryUnderstandingService().understand(CHINESE_SHORTEST_PATH_QUERY)
+    store = JsonBM25Store.from_path(index_path)
+    results = store.search(understanding.query_variants["bm25"], top_k=1)
+
+    assert results[0].id == "leetcode-994:statement:0"
     assert results[0].score > 0
 
 

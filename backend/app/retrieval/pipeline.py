@@ -10,6 +10,11 @@ from typing import Any, Callable, Literal, Sequence
 from ..analysis import detect_input_kind, load_programming_dataset
 from ..contracts import RetrievalEvidenceBundle, RetrievalTrace, ScoreMetadata
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
+from ..query_language import (
+    GRAPH_SEED_ENTITY_REGISTRY,
+    build_query_language_profile,
+    shared_multilingual_tokens,
+)
 from ..stores import BM25Store, GraphStore, SearchCandidate, VectorStore
 
 
@@ -143,6 +148,12 @@ class QueryUnderstanding:
     input_kind: str
     intent: str
     keywords: tuple[str, ...]
+    query_language: str = "en"
+    exact_terms: tuple[str, ...] = ()
+    low_weight_terms: tuple[str, ...] = ()
+    concept_seeds: tuple[str, ...] = ()
+    expanded_terms: tuple[str, ...] = ()
+    query_variants: JsonMap = field(default_factory=dict)
     code_features: CodeFeatures | None = None
 
     def to_mapping(self) -> JsonMap:
@@ -152,6 +163,12 @@ class QueryUnderstanding:
             "inputKind": self.input_kind,
             "intent": self.intent,
             "keywords": list(self.keywords),
+            "queryLanguage": self.query_language,
+            "exactTerms": list(self.exact_terms),
+            "lowWeightTerms": list(self.low_weight_terms),
+            "conceptSeeds": list(self.concept_seeds),
+            "expandedTerms": list(self.expanded_terms),
+            "queryVariants": dict(self.query_variants),
         }
         if self.code_features is not None:
             mapping["codeFeatures"] = self.code_features.to_mapping()
@@ -238,8 +255,8 @@ class QueryUnderstandingService:
 
     def understand(self, query: str) -> QueryUnderstanding:
         normalized = " ".join(query.strip().split())
-        lowered = normalized.lower()
-        keywords = tuple(dict.fromkeys(_tokens(lowered)))
+        language_profile = build_query_language_profile(normalized)
+        keywords = language_profile.keywords
         input_kind = detect_input_kind(query)
         exact_match = ExactProblemMatcher(self._documents).match(
             QueryUnderstanding(
@@ -267,6 +284,16 @@ class QueryUnderstandingService:
             input_kind=input_kind,
             intent=intent,
             keywords=keywords,
+            query_language=language_profile.query_language,
+            exact_terms=language_profile.exact_terms,
+            low_weight_terms=language_profile.low_weight_terms,
+            concept_seeds=language_profile.concept_seeds,
+            expanded_terms=language_profile.expanded_terms,
+            query_variants={
+                "bm25": language_profile.bm25_query,
+                "vector": language_profile.vector_query,
+                "graphSeeds": list(language_profile.graph_seeds),
+            },
             code_features=code_features,
         )
 
@@ -404,12 +431,15 @@ class ExactProblemMatcher:
 
 class EntityLinkingService:
     _concept_aliases: tuple[tuple[str, str, str], ...] = (
-        ("concept:bfs", "BFS", "algorithm"),
-        ("concept:queue", "Queue", "data_structure"),
-        ("concept:visited-array", "Visited Array", "data_structure"),
+        *(
+            (
+                entity_id,
+                str(metadata["name"]),
+                str(metadata["type"]),
+            )
+            for entity_id, metadata in GRAPH_SEED_ENTITY_REGISTRY.items()
+        ),
         ("concept:dynamic-programming", "Dynamic Programming", "algorithm"),
-        ("pattern:graph-traversal", "Graph Traversal", "pattern"),
-        ("concept:shortest-path", "Shortest Path", "concept"),
     )
 
     def link(
@@ -445,6 +475,18 @@ class EntityLinkingService:
                         "codeFeatureNodeId": f"code_feature:{feature}",
                     },
                 )
+        for entity_id in understanding.query_variants.get("graphSeeds", ()):
+            metadata = GRAPH_SEED_ENTITY_REGISTRY.get(str(entity_id))
+            if metadata is None:
+                continue
+            self._append_linked(
+                linked,
+                {
+                    **metadata,
+                    "confidence": 1.0,
+                    "matchedBy": "concept_seed",
+                },
+            )
         for entity_id, name, kind in self._concept_aliases:
             terms = _tokens(name)
             if any(term in understanding.keywords for term in terms) or name.lower() in text:
@@ -496,7 +538,8 @@ class VectorSearchService:
         }
 
     def search(self, understanding: QueryUnderstanding, *, top_k: int) -> tuple[RetrievalCandidate, ...]:
-        query_vector = self._embedding_provider.embed_text(understanding.normalized_query)
+        vector_query = str(understanding.query_variants.get("vector") or understanding.normalized_query)
+        query_vector = self._embedding_provider.embed_text(vector_query)
         if self._vector_store is not None:
             return _search_and_aggregate_store_candidates(
                 lambda window: self._vector_store.search(query_vector, top_k=window),
@@ -525,17 +568,18 @@ class BM25SearchService:
         self._bm25_store = bm25_store
 
     def search(self, understanding: QueryUnderstanding, *, top_k: int) -> tuple[RetrievalCandidate, ...]:
+        bm25_query = str(understanding.query_variants.get("bm25") or understanding.normalized_query)
         if self._bm25_store is not None:
             return _search_and_aggregate_store_candidates(
                 lambda window: self._bm25_store.search(
-                    understanding.normalized_query,
+                    bm25_query,
                     top_k=window,
                 ),
                 source="bm25",
                 top_k=top_k,
             )
 
-        query_terms = set(understanding.keywords)
+        query_terms = set(shared_multilingual_tokens(bm25_query))
         candidates: list[RetrievalCandidate] = []
         for document in self._documents:
             terms = _tokens(

@@ -5,6 +5,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_TS = REPO_ROOT / "frontend" / "src" / "api.ts"
 APP_TSX = REPO_ROOT / "frontend" / "src" / "App.tsx"
+TYPES_TS = REPO_ROOT / "frontend" / "src" / "types.ts"
 
 
 def _function_body(source: str, marker: str) -> str:
@@ -75,6 +76,28 @@ def test_normalize_trace_preserves_compatibility_warnings_for_debug_json():
 
     assert "compatibilityWarnings" in body
     assert "compatibility_warnings" in body
+
+
+def test_frontend_trace_contract_supports_multilingual_query_understanding_fields():
+    api_source = API_TS.read_text(encoding="utf-8")
+    types_source = TYPES_TS.read_text(encoding="utf-8")
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    body = _function_body(api_source, "function normalizeTrace")
+
+    for needle in (
+        "queryLanguage",
+        "exactTerms",
+        "lowWeightTerms",
+        "conceptSeeds",
+        "expandedTerms",
+        "queryVariants",
+    ):
+        assert needle in body
+        assert needle in types_source
+
+    assert "QueryUnderstandingPanel" in app_source
+    assert "conceptSeeds" in app_source
+    assert "expandedTerms" in app_source
 
 
 def test_app_clears_previous_result_when_new_request_starts():

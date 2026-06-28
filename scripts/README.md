@@ -1,40 +1,51 @@
-# Scripts
+# 腳本說明
 
-## Quick Start
+## `quick-start.ps1`
 
-Run the local fallback demo without Docker:
+不開 Docker，直接跑本機 fallback demo：
 
 ```powershell
 .\scripts\quick-start.ps1
 ```
 
-Run the store-backed demo with Neo4j, Qdrant, ingestion, FastAPI, and Vite:
+啟動 `stores` 模式 demo，包含 Neo4j、Qdrant、ingestion、FastAPI、Vite：
 
 ```powershell
 .\scripts\quick-start.ps1 -Stores
 ```
 
-Check prerequisites and paths without starting services:
+只檢查前置條件與路徑，不啟動服務：
 
 ```powershell
 .\scripts\quick-start.ps1 -Check
 .\scripts\quick-start.ps1 -Check -Stores
 ```
 
-With `-Check -Stores`, the script also prints the resolved Qdrant, Neo4j,
-`BM25_INDEX_PATH`, and `PROCESSED_PROBLEMS_PATH` values. The processed problems
-path defaults to `data/processed/problems.json`.
+`-Check -Stores` 會額外列出解析後的 Qdrant、Neo4j、`BM25_INDEX_PATH`、`PROCESSED_PROBLEMS_PATH`。其中 `PROCESSED_PROBLEMS_PATH` 預設為 `data/processed/problems.json`。
 
-The script starts:
+腳本會啟動：
 
-- FastAPI at `http://127.0.0.1:8000`
-- Vite at `http://127.0.0.1:5173`
-- Neo4j at `http://localhost:7474` and `bolt://localhost:7687` when `-Stores` is used
-- Qdrant at `http://localhost:6333` when `-Stores` is used
+- FastAPI：`http://127.0.0.1:8000`
+- Vite：`http://127.0.0.1:5173`
+- Neo4j：`http://localhost:7474` 與 `bolt://localhost:7687`，僅在 `-Stores` 時啟動
+- Qdrant：`http://localhost:6333`，僅在 `-Stores` 時啟動
 
-Override the app ports with `-BackendPort` and `-FrontendPort`. The Vite
-development proxy follows the selected backend port.
+可用 `-BackendPort` 與 `-FrontendPort` 覆蓋埠號。Vite dev proxy 會跟著後端埠號調整。
 
-Use `-SkipDocker` after Docker services are already running. Use
-`-SkipIngestion` after `data/processed/problems.json`,
-`data/processed/bm25_index.json`, Qdrant, and Neo4j are already seeded.
+如果 Docker 服務已經在跑，可加：
+
+```powershell
+.\scripts\quick-start.ps1 -Stores -SkipDocker
+```
+
+如果 `data/processed/problems.json`、`data/processed/bm25_index.json`、Qdrant、Neo4j 都已經完成 seed，可加：
+
+```powershell
+.\scripts\quick-start.ps1 -Stores -SkipIngestion
+```
+
+若 Windows execution policy 擋住腳本，可改用：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\quick-start.ps1 -Check
+```

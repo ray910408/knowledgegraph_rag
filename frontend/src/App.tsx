@@ -459,6 +459,7 @@ function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
   const understanding = trace?.queryUnderstanding;
   const entities = trace?.entityLinking ?? [];
   const codeFeatures = understanding?.codeFeatures?.features ?? [];
+  const queryVariants = understanding?.queryVariants;
 
   return (
     <OutputBlock title="查詢理解">
@@ -474,6 +475,38 @@ function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
         <div>
           <span>關鍵詞</span>
           <strong>{understanding?.keywords?.join(", ") || "-"}</strong>
+        </div>
+        <div>
+          <span>語言</span>
+          <strong>{understanding?.queryLanguage || "-"}</strong>
+        </div>
+        <div>
+          <span>精確詞</span>
+          <strong>{understanding?.exactTerms?.join(", ") || "-"}</strong>
+        </div>
+        <div>
+          <span>概念種子</span>
+          <strong>{understanding?.conceptSeeds?.join(", ") || "-"}</strong>
+        </div>
+        <div>
+          <span>擴展詞</span>
+          <strong>{understanding?.expandedTerms?.join(", ") || "-"}</strong>
+        </div>
+        <div>
+          <span>低權重詞</span>
+          <strong>{understanding?.lowWeightTerms?.join(", ") || "-"}</strong>
+        </div>
+        <div>
+          <span>BM25 Query</span>
+          <strong>{queryVariants?.bm25 || "-"}</strong>
+        </div>
+        <div>
+          <span>Vector Query</span>
+          <strong>{queryVariants?.vector || "-"}</strong>
+        </div>
+        <div>
+          <span>Graph Seeds</span>
+          <strong>{queryVariants?.graphSeeds?.join(", ") || "-"}</strong>
         </div>
         {codeFeatures.length > 0 && (
           <div>

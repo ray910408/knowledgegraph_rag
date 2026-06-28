@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from backend.app.ingestion.pipeline import build_ingestion_artifacts
+from backend.app.providers import DeterministicMockEmbeddingProvider
 
 
 def test_committed_programming_problem_seed_is_readable_utf8():
@@ -140,6 +141,8 @@ def test_ingestion_enriches_vector_and_bm25_payloads(tmp_path):
 
     bm25 = json.loads((processed_dir / "bm25_index.json").read_text(encoding="utf-8"))
     qdrant = json.loads((processed_dir / "qdrant_vectors.json").read_text(encoding="utf-8"))
+    neo4j = json.loads((processed_dir / "neo4j_graph.json").read_text(encoding="utf-8"))
+    search_text = bm25["documents"][0]["text"]
     for payload in (
         bm25["documents"][0]["payload"],
         qdrant["records"][0]["payload"],
@@ -155,6 +158,23 @@ def test_ingestion_enriches_vector_and_bm25_payloads(tmp_path):
         assert payload["title"] == "Rotting Oranges"
         assert payload["problemType"] == "Graph Traversal"
         assert payload["concepts"] == ["BFS", "Queue"]
+
+    assert "Graph Traversal" in search_text
+    assert "graph traversal" in search_text
+    assert "圖論遍歷" in search_text
+    assert "圖遍歷" in search_text
+    assert "廣度優先搜尋" in search_text
+    assert "廣搜" in search_text
+    assert "佇列" in search_text
+    assert "隊列" in search_text
+    assert qdrant["records"][0]["payload"]["text"] == "Multi-source BFS with a queue on a grid."
+    assert qdrant["records"][0]["vector"] == list(
+        DeterministicMockEmbeddingProvider().embed_text(search_text)
+    )
+
+    bfs_entity = next(entity for entity in neo4j["entities"] if entity["id"] == "concept:bfs")
+    assert "廣搜" in bfs_entity["aliases"]
+    assert "廣度優先搜尋" in bfs_entity["aliases"]
 
 
 def test_ingestion_cli_supports_json_target(tmp_path):

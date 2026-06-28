@@ -3,7 +3,11 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.analysis import find_graph_traversal_examples, load_programming_dataset
+from backend.app.analysis import (
+    detect_graph_traversal_signals,
+    find_graph_traversal_examples,
+    load_programming_dataset,
+)
 from backend.app.contracts import RetrievalTrace
 from backend.app.main import (
     AnalysisRequest,
@@ -135,8 +139,26 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     assert any("visited" in mistake and "\u5fd8\u8a18\u6a19\u8a18" in mistake for mistake in payload["commonMistakes"])
     assert any("queue \u521d\u59cb\u5316\u932f\u8aa4" in mistake for mistake in payload["commonMistakes"])
 
-    assert payload["evidencePaths"] == []
-    assert payload["evidenceBundle"]["graphPaths"] == []
+    understanding = payload["retrievalTrace"]["queryUnderstanding"]
+    assert understanding["queryLanguage"] == "zh-Hant"
+    assert {"無權圖", "最短步數"}.issubset(set(understanding["keywords"]))
+    assert {"BFS", "Queue", "Shortest Path", "Graph Traversal"}.issubset(
+        set(understanding["conceptSeeds"])
+    )
+    assert "breadth first search" in understanding["queryVariants"]["bm25"]
+
+    assert payload["retrievalTrace"]["bm25Candidates"]
+    assert payload["retrievalTrace"]["graphCandidates"]
+    assert payload["evidencePaths"]
+    assert payload["evidenceBundle"]["graphPaths"]
+
+
+def test_detect_graph_traversal_signals_supports_multilingual_shortest_path_terms():
+    signals = set(
+        detect_graph_traversal_signals("請用廣搜與佇列找出無權圖中從起點到終點的最短步數。")
+    )
+
+    assert {"BFS", "Queue", "Unweighted shortest path", "Graph"}.issubset(signals)
 
 
 def test_python_code_with_queue_deque_and_visited_is_classified_as_python():

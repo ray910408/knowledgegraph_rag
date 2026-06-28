@@ -150,6 +150,16 @@ export interface RetrievalTrace {
     inputKind?: InputKind;
     intent?: string;
     keywords?: string[];
+    queryLanguage?: "zh-Hant" | "en" | "mixed" | string;
+    exactTerms?: string[];
+    lowWeightTerms?: string[];
+    conceptSeeds?: string[];
+    expandedTerms?: string[];
+    queryVariants?: {
+      bm25?: string;
+      vector?: string;
+      graphSeeds?: string[];
+    };
     codeFeatures?: CodeFeatures;
   };
   entityLinking: Array<Record<string, unknown>>;

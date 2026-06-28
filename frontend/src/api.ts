@@ -58,7 +58,17 @@ const fallbackTrace: RetrievalTrace = {
   queryUnderstanding: {
     intent: "problem_search",
     inputKind: "problem",
-    keywords: ["bfs", "queue", "shortest", "path"]
+    keywords: ["bfs", "queue", "shortest", "path"],
+    queryLanguage: "en",
+    exactTerms: [],
+    lowWeightTerms: [],
+    conceptSeeds: ["BFS", "Queue", "Shortest Path"],
+    expandedTerms: ["breadth first search", "queue", "shortest path"],
+    queryVariants: {
+      bm25: "bfs queue shortest path breadth first search",
+      vector: "find the shortest path using bfs and a queue",
+      graphSeeds: ["concept:bfs", "concept:queue", "concept:shortest-path"]
+    }
   },
   entityLinking: [
     { entityId: "concept:bfs", name: "BFS", type: "algorithm", confidence: 1 },
@@ -577,6 +587,7 @@ function normalizeCandidate(value: unknown, depth = 0): TraceCandidate | null {
 function normalizeTrace(value: unknown): RetrievalTrace {
   const record = asRecord(value) ?? {};
   const queryUnderstanding = asRecord(record.queryUnderstanding) ?? asRecord(fallbackTrace.queryUnderstanding) ?? {};
+  const variants = asRecord(firstPresent(queryUnderstanding, ["queryVariants", "query_variants"])) ?? {};
   const codeFeatures = normalizeCodeFeatures(
     firstPresent(queryUnderstanding, ["codeFeatures", "code_features"])
   );
@@ -591,6 +602,16 @@ function normalizeTrace(value: unknown): RetrievalTrace {
       inputKind: normalizeInputKind(queryUnderstanding.inputKind),
       intent: asString(queryUnderstanding.intent, "problem_search"),
       keywords: asStringArray(queryUnderstanding.keywords),
+      queryLanguage: asString(firstPresent(queryUnderstanding, ["queryLanguage", "query_language"]), ""),
+      exactTerms: asStringArray(firstPresent(queryUnderstanding, ["exactTerms", "exact_terms"])),
+      lowWeightTerms: asStringArray(firstPresent(queryUnderstanding, ["lowWeightTerms", "low_weight_terms"])),
+      conceptSeeds: asStringArray(firstPresent(queryUnderstanding, ["conceptSeeds", "concept_seeds"])),
+      expandedTerms: asStringArray(firstPresent(queryUnderstanding, ["expandedTerms", "expanded_terms"])),
+      queryVariants: {
+        bm25: asString(variants.bm25, ""),
+        vector: asString(variants.vector, ""),
+        graphSeeds: asStringArray(firstPresent(variants, ["graphSeeds", "graph_seeds"]))
+      },
       codeFeatures
     },
     entityLinking: pickArray(record, ["entityLinking"]).filter((item): item is UnknownRecord => asRecord(item) !== null),

@@ -283,6 +283,62 @@ def test_code_feature_extractor_ignores_non_traversal_queue_deque_and_set(snippe
     assert "Visited Array" not in linked_names
 
 
+def test_query_understanding_extracts_multilingual_terms_for_unweighted_shortest_path():
+    query = "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
+
+    understanding = QueryUnderstandingService().understand(query)
+    mapping = understanding.to_mapping()
+
+    assert mapping["queryLanguage"] == "zh-Hant"
+    assert {"無權圖", "最短步數"}.issubset(set(mapping["keywords"]))
+    assert {"BFS", "Queue", "Shortest Path"}.issubset(set(mapping["conceptSeeds"]))
+    assert "unweighted graph" in mapping["expandedTerms"]
+    assert {"shortest path", "shortest steps"} & set(mapping["expandedTerms"])
+    assert mapping["queryVariants"]["bm25"].startswith(query)
+    assert "breadth first search" in mapping["queryVariants"]["bm25"]
+    assert {
+        "concept:bfs",
+        "concept:queue",
+        "concept:shortest-path",
+    }.issubset(set(mapping["queryVariants"]["graphSeeds"]))
+
+
+def test_entity_linking_uses_graph_seeds_for_chinese_problem_query():
+    understanding = QueryUnderstandingService().understand(
+        "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
+    )
+
+    linked_entities = EntityLinkingService().link(understanding)
+    entity_ids = {str(entity["entityId"]) for entity in linked_entities}
+
+    assert {
+        "concept:bfs",
+        "concept:queue",
+        "concept:shortest-path",
+        "pattern:graph-traversal",
+    }.issubset(entity_ids)
+    assert any(entity.get("matchedBy") == "concept_seed" for entity in linked_entities)
+
+
+def test_graph_search_returns_paths_for_chinese_problem_query():
+    documents = _documents()
+    graph_store = _build_graph_store(documents)
+    understanding = QueryUnderstandingService().understand(
+        "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
+    )
+    linked_entities = EntityLinkingService().link(understanding)
+
+    result = GraphSearchService(documents, graph_store=graph_store).search(
+        linked_entities,
+        top_k=2,
+    )
+
+    assert result.candidates
+    assert result.candidates[0].id == "leetcode-994"
+    assert result.paths
+    assert any(_path_node_ids(path)[-1] == "concept:bfs" for path in result.paths)
+
+
 def test_vector_search_service_can_use_vector_store():
     documents = _documents()
     embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
@@ -299,6 +355,35 @@ def test_vector_search_service_can_use_vector_store():
     assert candidates[0].source == "vector"
     assert candidates[0].payload["storeCandidateId"] == "leetcode-994:statement:0"
     assert candidates[0].payload["documentSource"] == "LeetCode"
+
+
+def test_vector_search_uses_expanded_semantic_variant_for_chinese_query():
+    class RecordingEmbeddingProvider(DeterministicMockEmbeddingProvider):
+        def __init__(self) -> None:
+            super().__init__(dimension=8)
+            self.requested_texts: list[str] = []
+
+        def embed_text(self, text: str) -> tuple[float, ...]:
+            self.requested_texts.append(text)
+            return super().embed_text(text)
+
+    documents = _documents()
+    embedding_provider = RecordingEmbeddingProvider()
+    understanding = QueryUnderstandingService().understand(
+        "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
+    )
+    service = VectorSearchService(
+        documents,
+        embedding_provider,
+    )
+    embedding_provider.requested_texts.clear()
+
+    candidates = service.search(understanding, top_k=2)
+
+    assert candidates
+    assert candidates[0].source == "vector"
+    assert embedding_provider.requested_texts == [understanding.query_variants["vector"]]
+    assert "unweighted graph" in understanding.query_variants["vector"]
 
 
 def test_bm25_search_service_can_use_bm25_store():
@@ -331,9 +416,11 @@ class _FakeBM25Store:
     def __init__(self, candidates: tuple[SearchCandidate, ...]) -> None:
         self._candidates = candidates
         self.requested_top_k: list[int] = []
+        self.requested_queries: list[str] = []
 
     def search(self, query, *, top_k):
         self.requested_top_k.append(top_k)
+        self.requested_queries.append(str(query))
         return self._candidates[:top_k]
 
 
@@ -389,6 +476,28 @@ def test_store_backed_bm25_filters_zero_score_candidates():
 
     assert [candidate.id for candidate in candidates] == ["uva-10653"]
     assert all(candidate.score > 0 for candidate in candidates)
+
+
+def test_bm25_search_service_passes_multilingual_bm25_variant_to_store():
+    documents = _documents()
+    store = _FakeBM25Store(
+        (
+            SearchCandidate(
+                id="leetcode-994:statement:0",
+                score=0.9,
+                payload=_store_payload(documents[0]),
+            ),
+        )
+    )
+    understanding = QueryUnderstandingService().understand(
+        "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
+    )
+
+    candidates = BM25SearchService(documents, bm25_store=store).search(understanding, top_k=1)
+
+    assert candidates[0].id == "leetcode-994"
+    assert store.requested_queries
+    assert all(query == understanding.query_variants["bm25"] for query in store.requested_queries)
 
 
 def _duplicate_chunk_candidates() -> tuple[SearchCandidate, ...]:
@@ -994,6 +1103,19 @@ def test_local_bm25_filters_zero_score_candidates():
     candidates = BM25SearchService(documents).search(understanding, top_k=3)
 
     assert [candidate.id for candidate in candidates] == ["uva-10653"]
+    assert all(candidate.score > 0 for candidate in candidates)
+
+
+def test_local_bm25_returns_candidates_for_chinese_problem_query():
+    documents = _documents()
+    understanding = QueryUnderstandingService().understand(
+        "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
+    )
+
+    candidates = BM25SearchService(documents).search(understanding, top_k=2)
+
+    assert candidates
+    assert candidates[0].id == "leetcode-994"
     assert all(candidate.score > 0 for candidate in candidates)
 
 
