@@ -92,7 +92,7 @@ arguments into those services.
 
 Graph store paths keep two shapes on purpose:
 
-- `nodes` / `relations`: stable display summary, `input -> linked entity -> problem`.
+- `nodes` / `relations`: layered public path objects, `problem -> source -> target`.
 - `storePath.nodes` / `storePath.relations`: raw nodes and relations returned by the store.
 
 Query embedding 由 `OnlineQueryPipeline` 透過 `EmbeddingProvider` 執行，預設使用 deterministic mock provider，正式設定保留 `BAAI/bge-m3` 作為模型名稱。
@@ -101,7 +101,9 @@ API 層的 `POST /api/analysis` 與 `POST /api/v1/analysis` 保留既有 respons
 
 - `retrievalTrace`
 - `evidenceBundle`
-- `contextPreview`
+- `matchedProblem`
+- `contextPreview` in debug responses only
+- `retrievalBackend` in debug responses only
 
 `AnalysisRequest.mode` selects which retrieval lane contributes final
 candidates:
@@ -158,7 +160,7 @@ the physical backend for each lane:
 
 Graph store paths keep two shapes:
 
-- `nodes` / `relations`: stable display summary, `input -> linked entity -> problem`.
+- `nodes` / `relations`: layered public path objects, `problem -> source -> target`.
 - `storePath.nodes` / `storePath.relations`: raw nodes and relations returned by Neo4j.
 
 `contextPreview` 只在 `debug=true` 時回傳，避免正式 UI 每次暴露完整 prompt context.
