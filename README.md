@@ -8,13 +8,9 @@
 ## 文件導覽
 
 - [架構說明](docs/architecture.md)
-- [API 契約](docs/api.md)
-- [資料契約](docs/data-contract.md)
-- [驗證與評估](docs/evaluation.md)
-- [腳本說明](scripts/README.md)
 - [API contract](docs/api.md)
 - [資料 contract](docs/data-contract.md)
-- [Evaluation plan](docs/evaluation.md)
+- [驗證與評估](docs/evaluation.md)
 - [Scripts](scripts/README.md)
 
 ## 離線建庫流程
