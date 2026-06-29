@@ -65,6 +65,444 @@
         "graphKind": "unweighted grid",
         "difficulty": "medium"
       }
+    },
+    {
+      "id": "uva-532",
+      "title": "Dungeon Master",
+      "source": "UVa",
+      "sourceId": "532",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "BFS",
+        "Queue",
+        "Visited Array",
+        "3D Grid"
+      ],
+      "statement": "在一個 3D 地牢中，從起點移動到終點，找出最短逃脫時間（每移動一格耗時 1 分鐘）。",
+      "answer": "這與 2D 網格 BFS 原理相同，僅需將移動方向從 4 個擴展至上下左右前後共 6 個方向。",
+      "solutionHints": [
+        "使用 3D 陣列表示地牢。",
+        "定義六個方向的位移向量 (dz, dy, dx)。"
+      ],
+      "metadata": {
+        "graphKind": "3D grid",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-11624",
+      "title": "Fire!",
+      "source": "UVa",
+      "sourceId": "11624",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "BFS",
+        "Queue",
+        "Visited Array",
+        "Multi-source BFS"
+      ],
+      "statement": "主角在地牢中移動，同時火勢也會蔓延。主角需判斷是否能在被火燒到之前逃離邊界。",
+      "answer": "使用多源 BFS：先計算火蔓延到每個格子的時間，再進行主角的移動 BFS，主角只能進入那些「到達時間小於火蔓延時間」的格子。",
+      "solutionHints": [
+        "先對所有火的位置進行 BFS，預計算出每個格子的著火時間。",
+        "再從主角起點進行 BFS，移動條件需滿足 time < fire_time。"
+      ],
+      "metadata": {
+        "graphKind": "unweighted grid",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-116",
+      "title": "Unidirectional TSP",
+      "source": "UVa",
+      "sourceId": "116",
+      "problemType": "Dynamic Programming",
+      "concepts": [
+        "DP",
+        "Memoization",
+        "Grid DP",
+        "Lexicographical Order"
+      ],
+      "statement": "在矩陣中從第一行移動到最後一行，每步只能往右三種方向（右上、右、右下），找出權重最小的路徑。",
+      "answer": "使用動態規劃或記憶化搜尋，令 dp[row][col] 表示從目前位置走到最後一欄的最小成本，並在轉移時依字典序處理候選列。",
+      "solutionHints": [
+        "狀態可設為目前所在列與欄位。",
+        "每一步考慮右上、右、右下三個方向，並排序候選列以保證字典序最小。"
+      ],
+      "metadata": {
+        "graphKind": "grid",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-572",
+      "title": "Oil Deposits",
+      "source": "UVa",
+      "sourceId": "572",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "DFS",
+        "Connected Components",
+        "Flood Fill",
+        "Visited Array"
+      ],
+      "statement": "給定一個二維網格，計算其中連通的『油田』（相鄰的 @）數量，八個方向相鄰視為同一個油田。",
+      "answer": "遍歷網格，每當遇到一個未造訪的 '@'，即啟動 DFS 進行 Flood Fill，將所有連通的 '@' 標記為已造訪。",
+      "solutionHints": [
+        "DFS 函數會將當前點及其八個鄰居遞迴標記。",
+        "網格中每個未造訪的 '@' 都代表一個新的油田。"
+      ],
+      "metadata": {
+        "graphKind": "unweighted grid",
+        "difficulty": "easy"
+      }
+    },
+    {
+      "id": "uva-280",
+      "title": "Vertex",
+      "source": "UVa",
+      "sourceId": "280",
+      "problemType": "Graph Traversal",
+      "concepts": [
+        "DFS",
+        "Graph Reachability",
+        "Visited Array"
+      ],
+      "statement": "給定一個有向圖，對於指定的起始點，找出圖中哪些節點是無法被到達的。",
+      "answer": "對每個起始點執行 DFS，記錄所有可達節點，最後輸出所有未被標記的節點。",
+      "solutionHints": [
+        "使用鄰接矩陣或鄰接表存儲圖。",
+        "注意 DFS 遍歷時每個節點只需檢查是否可達，不需路徑長度。"
+      ],
+      "metadata": {
+        "graphKind": "directed graph",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-10130",
+      "title": "SuperSale",
+      "source": "UVa",
+      "sourceId": "10130",
+      "problemType": "Dynamic Programming",
+      "concepts": [
+        "DP",
+        "0/1 Knapsack"
+      ],
+      "statement": "給定一系列物品的價格與重量，以及多個不同承重的背包，計算所有背包能裝下的最大總價值。",
+      "answer": "將此問題拆解為多個獨立的 0/1 背包問題，針對每個背包容量計算出該限制下的最大價值。",
+      "solutionHints": [
+        "先將背包承重上限中的最大值作為 DP 陣列大小。",
+        "使用一維陣列進行空間優化，內層迴圈必須逆序遍歷以確保物品只被選取一次。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-437",
+      "title": "The Tower of Babylon",
+      "source": "UVa",
+      "sourceId": "437",
+      "problemType": "Dynamic Programming",
+      "concepts": [
+        "DP",
+        "LIS",
+        "Sorting"
+      ],
+      "statement": "有不同尺寸的長方體方塊，方塊可旋轉，堆疊時上方長方體的長寬必須嚴格小於下方，求最高能堆多高。",
+      "answer": "這是一個變形的最長遞增子序列（LIS）問題，先將所有可能的擺放情況視為不同方塊，依面積排序後做 DP。",
+      "solutionHints": [
+        "將每個方塊的 3 種朝向都列出放入清單。",
+        "依照底面積大小進行排序，定義 dp[i] 為以第 i 個方塊為頂部時的最大高度。"
+      ],
+      "metadata": {
+        "graphKind": "DAG",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "id": "uva-108",
+      "title": "Maximum Sum",
+      "source": "UVa",
+      "sourceId": "108",
+      "problemType": "Dynamic Programming",
+      "concepts": [
+        "DP",
+        "Prefix Sum",
+        "Kadane's Algorithm"
+      ],
+      "statement": "在一個 N x N 的整數矩陣中，找出一個子矩陣，使其元素總和最大。",
+      "answer": "將 2D 問題降維，固定矩陣的上下邊界，將範圍內的直行加總轉化為 1D 的最大子序列和問題（Kadane's Algorithm）。",
+      "solutionHints": [
+        "利用前綴和陣列快速計算矩陣列的和。",
+        "枚舉上下行邊界，時間複雜度為 O(N^3)。"
+      ],
+      "metadata": {
+        "graphKind": "grid",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-10567",
+      "title": "Helping Fill Bates",
+      "source": "UVa",
+      "sourceId": "10567",
+      "problemType": "Binary Search",
+      "concepts": [
+        "Binary Search",
+        "Upper Bound",
+        "String Processing"
+      ],
+      "statement": "判斷一個字串是否為另一個大字串的子序列，若是，找出其在原始字串中第一次與最後一次出現的索引範圍。",
+      "answer": "預處理大字串，將每個字元出現的所有位置紀錄在陣列中，透過二分搜尋 (upper_bound) 快速查找下一個合法字元的最小位置。",
+      "solutionHints": [
+        "將 'a'-'z', 'A'-'Z' 的索引存入 vector<int> 陣列。",
+        "使用 std::upper_bound 確保找到的位置嚴格大於前一個字元的位置。"
+      ],
+      "metadata": {
+        "graphKind": "string",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-11413",
+      "title": "Fill the Containers",
+      "source": "UVa",
+      "sourceId": "11413",
+      "problemType": "Binary Search",
+      "concepts": [
+        "Binary Search on Answer",
+        "Greedy",
+        "Simulation"
+      ],
+      "statement": "有 n 個容器與 m 個箱子，需將箱子分配到容器中，求容器容量的最小值，使得不超過 m 個容器的情況下裝完所有箱子。",
+      "answer": "對容器容量進行二分搜尋，檢查當前容量是否能裝下所有箱子，若能則嘗試更小的容量。",
+      "solutionHints": [
+        "搜尋範圍下界為最大箱子的重量，上界為所有箱子重量總和。",
+        "模擬分配過程，若所需容器數 > m 則需增加容量。"
+      ],
+      "metadata": {
+        "graphKind": "array",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-10341",
+      "title": "Solve It",
+      "source": "UVa",
+      "sourceId": "10341",
+      "problemType": "Binary Search",
+      "concepts": [
+        "Binary Search",
+        "Numerical Analysis",
+        "Monotonicity"
+      ],
+      "statement": "給定方程式 p*e^(-x) + q*sin(x) + r*cos(x) + s*tan(x) + t*x^2 + u = 0，求在 [0, 1] 區間內的解。",
+      "answer": "由於該函數在 [0, 1] 區間內通常是單調遞減的，可利用二分搜尋逼近方程式的根。",
+      "solutionHints": [
+        "設定精度閾值（如 1e-9）進行二分搜尋。",
+        "檢查端點值 f(0) 和 f(1) 的符號是否相異，若同號且無根則輸出 No solution。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-1121",
+      "title": "Subsequence",
+      "source": "UVa",
+      "sourceId": "1121",
+      "problemType": "Sliding Window",
+      "concepts": [
+        "Sliding Window",
+        "Two Pointers"
+      ],
+      "statement": "給定一個正整數數列與目標總和 S，找出總和大於或等於 S 的最短連續子序列長度。",
+      "answer": "維持一個窗口，右指標不斷擴張直到總和大於 S，接著左指標收縮以尋找最小長度。",
+      "solutionHints": [
+        "使用雙指標 (left, right) 維護目前的視窗總和。",
+        "當總和 >= S 時，更新答案並嘗試將左指標右移來縮減視窗。"
+      ],
+      "metadata": {
+        "graphKind": "array",
+        "difficulty": "easy"
+      }
+    },
+    {
+      "id": "uva-11572",
+      "title": "Unique Snowflakes",
+      "source": "UVa",
+      "sourceId": "11572",
+      "problemType": "Sliding Window",
+      "concepts": [
+        "Sliding Window",
+        "Hash Map"
+      ],
+      "statement": "在一串雪花編號中，找出最長的一段連續子序列，使得其中所有雪花編號皆不重複。",
+      "answer": "使用滑動視窗記錄當前視窗內的元素，若右側加入元素導致重複，則左指標向右移動直到移除重複元素。",
+      "solutionHints": [
+        "利用 Hash Map 記錄每個數字出現的最新位置。",
+        "當遇到重複元素時，將左指標跳轉至該重複元素上次出現位置的下一個。"
+      ],
+      "metadata": {
+        "graphKind": "array",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-12190",
+      "title": "Electric Bill",
+      "source": "UVa",
+      "sourceId": "12190",
+      "problemType": "Binary Search",
+      "concepts": [
+        "Binary Search",
+        "Binary Search on Answer",
+        "Piecewise Function"
+      ],
+      "statement": "已知總電費與兩戶人家電費差額，根據分段費率反推其中一戶的耗電量。",
+      "answer": "先用二分搜尋從總電費反推總耗電量，再對其中一戶耗電量做二分搜尋，使兩戶電費差符合題目要求。",
+      "solutionHints": [
+        "先實作耗電量轉電費，以及電費反推耗電量的函式。",
+        "第二次二分搜尋其中一戶的用電量，根據兩戶電費差調整左右界。"
+      ],
+      "metadata": {
+        "graphKind": "math",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "id": "uva-673",
+      "title": "Parentheses Balance",
+      "source": "UVa",
+      "sourceId": "673",
+      "problemType": "Stack",
+      "concepts": [
+        "Stack",
+        "String Matching"
+      ],
+      "statement": "檢查包含圓括號與方括號的字串是否配對正確。",
+      "answer": "遍歷字串，遇到左括號則入棧；遇到右括號則檢查棧頂是否為對應的左括號，若匹配則彈出，否則無效。",
+      "solutionHints": [
+        "使用 std::stack 處理後進先出的匹配邏輯。",
+        "最後需確認棧是否為空，以防左括號過多。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "easy"
+      }
+    },
+    {
+      "id": "uva-127",
+      "title": "\"Accordian\" Patience",
+      "source": "UVa",
+      "sourceId": "127",
+      "problemType": "Stack",
+      "concepts": [
+        "Stack",
+        "Simulation"
+      ],
+      "statement": "模擬撲克牌遊戲，將牌堆移動至左側第一個或第三個可放置的牌堆（花色或點數相同）。",
+      "answer": "使用多個 Stack 模擬每一堆牌，依規則檢查並移動，直到無法再移動為止。",
+      "solutionHints": [
+        "需管理一組 Stack 的容器。",
+        "移動優先順序為：先查左 3 堆，再查左 1 堆。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-727",
+      "title": "Equation",
+      "source": "UVa",
+      "sourceId": "727",
+      "problemType": "Stack",
+      "concepts": [
+        "Stack",
+        "Infix to Postfix"
+      ],
+      "statement": "將中綴運算式（Infix）轉換為後綴運算式（Postfix/RPN）。",
+      "answer": "使用 Dijkstra 的 Shunting-yard 演算法，利用 Stack 暫存運算符號並依優先級輸出。",
+      "solutionHints": [
+        "定義運算子的優先級（如 * > +）。",
+        "括號處理需特別小心，右括號需彈出直到遇到左括號。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-10226",
+      "title": "Hardwood Species",
+      "source": "UVa",
+      "sourceId": "10226",
+      "problemType": "Hash Map",
+      "concepts": [
+        "Hash Map",
+        "Frequency Counting",
+        "Sorting"
+      ],
+      "statement": "給定一份樹木清單，統計每一種樹木佔總數的百分比，並按字典順序輸出。",
+      "answer": "使用 Hash Map (或 Map) 記錄每種樹木出現的次數，最後遍歷 Map 計算並輸出百分比。",
+      "solutionHints": [
+        "使用 Map 自動排序功能可以省去額外的排序步驟。",
+        "注意浮點數輸出的精度要求 (printf(\"%.4f\"))。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "uva-11991",
+      "title": "Easy Problem from Rujia Liu?",
+      "source": "UVa",
+      "sourceId": "11991",
+      "problemType": "Hash Map",
+      "concepts": [
+        "Hash Map",
+        "Adjacency List",
+        "Indexing"
+      ],
+      "statement": "給定一個數列，需多次查詢某個數值 k 在數列中第 m 次出現的位置。",
+      "answer": "使用一個陣列或 Hash Map，將每個數值對應到一個儲存其所有出現位置的陣列 (vector)。",
+      "solutionHints": [
+        "預處理時，將數值作為 Key，出現的位置作為 Value (List)。",
+        "查詢時直接透過索引存取該數值的 List 即可，效率為 O(1)。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "easy"
+      }
+    },
+    {
+      "id": "uva-484",
+      "title": "The Department of Redundancy Department",
+      "source": "UVa",
+      "sourceId": "484",
+      "problemType": "Hash Map",
+      "concepts": [
+        "Hash Map",
+        "Ordering",
+        "Frequency Counting"
+      ],
+      "statement": "輸入一串整數，按數字第一次出現的順序，輸出每個數字及其出現的總次數。",
+      "answer": "同時使用 Hash Map 記錄次數，並使用一個陣列 (或 vector) 記錄數字出現的先後順序。",
+      "solutionHints": [
+        "Map 用於統計次數，而 Order List 用於保證輸出順序。",
+        "讀取輸入時若數字為新出現的，則將其加入 Order List。"
+      ],
+      "metadata": {
+        "graphKind": "none",
+        "difficulty": "easy"
+      }
     }
   ]
 }
