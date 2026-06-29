@@ -36,8 +36,36 @@ def test_in_memory_bm25_store_returns_keyword_matches():
 
     results = store.search("shortest path BFS", top_k=2)
 
-    assert results[0].id == "bfs"
-    assert results[0].score > results[1].score
+    assert [result.id for result in results] == ["bfs"]
+    assert results[0].score > 0
+
+
+def test_in_memory_bm25_store_filters_zero_score_candidates_before_top_k():
+    store = InMemoryBM25Store()
+    store.index_documents(
+        (
+            BM25Document(id="matching", text="BFS queue shortest path"),
+            BM25Document(id="zero-a", text="dynamic programming subsequence"),
+            BM25Document(id="zero-b", text="binary search array"),
+        )
+    )
+
+    results = store.search("BFS", top_k=3)
+
+    assert [result.id for result in results] == ["matching"]
+    assert all(result.score > 0 for result in results)
+
+
+def test_in_memory_bm25_store_empty_query_returns_no_candidates():
+    store = InMemoryBM25Store()
+    store.index_documents(
+        (
+            BM25Document(id="bfs", text="BFS queue shortest path"),
+            BM25Document(id="dp", text="dynamic programming subsequence"),
+        )
+    )
+
+    assert store.search("", top_k=5) == ()
 
 
 def test_in_memory_graph_store_returns_paths():

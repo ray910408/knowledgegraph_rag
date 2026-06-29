@@ -646,6 +646,11 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
         pipeline_result.query_understanding,
         evidence_bundle,
     )
+    evidence_common_mistakes = list(evidence_mapping.get("commonMistakes") or [])
+    if debug:
+        retrieval_trace["rawGraphPaths"] = [
+            dict(path) for path in pipeline_result.raw_graph_paths
+        ]
     matched_problem_ids = (
         {
             pipeline_result.matched_problem.problem_id,
@@ -675,7 +680,7 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
         ),
         similarityReason=result.similarity_reason,
         solvingHints=list(result.solving_hints),
-        commonMistakes=list(result.common_mistakes),
+        commonMistakes=evidence_common_mistakes or list(result.common_mistakes),
         evidencePaths=retrieval_evidence_paths,
         retrievalConfig=retrieval_config,
         retrievalBackend=runtime_retrieval.backend if debug else None,

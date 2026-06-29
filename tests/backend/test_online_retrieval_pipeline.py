@@ -9,12 +9,14 @@ from backend.app.adapters.in_memory import (
 )
 from backend.app.contracts import EntityRecord, RelationRecord
 from backend.app.providers import DeterministicMockEmbeddingProvider
+from backend.app.retrieval import pipeline as retrieval_pipeline
 from backend.app.retrieval.pipeline import (
     BM25SearchService,
     CodeFeatureExtractor,
     ContextBuilder,
     EntityLinkingService,
     EvidenceBuilder,
+    ExactProblemMatch,
     ExactProblemMatcher,
     GraphSearchService,
     HybridFusionService,
@@ -25,6 +27,7 @@ from backend.app.retrieval.pipeline import (
     RetrievalDocument,
     VectorSearchService,
     _aggregate_problem_candidates,
+    _graph_edge,
 )
 from backend.app.stores import BM25Document, SearchCandidate, VectorRecord
 
@@ -450,6 +453,175 @@ def _path_relation_types(path: dict[str, object]) -> list[str]:
     return types
 
 
+def _candidate_with_raw_chunks_for_context(
+    *,
+    metadata_common_mistakes: list[str] | None = None,
+    common_mistakes_chunk: str = "",
+) -> RetrievalCandidate:
+    def raw_chunk(kind: str, display_text: str, score: float) -> dict[str, object]:
+        return {
+            "id": f"leetcode-994:{kind}:0",
+            "title": "Rotting Oranges",
+            "source": "vector",
+            "score": score,
+            "payload": {
+                "storePayload": {
+                    "problemId": "leetcode-994",
+                    "kind": kind,
+                    "displayText": display_text,
+                    "searchText": f"DO_NOT_RENDER searchText raw alias for {kind}",
+                    "text": f"{display_text} fallback text",
+                    "documentSource": "LeetCode",
+                    "sourceId": "994",
+                    "title": "Rotting Oranges",
+                    "problemType": "Graph Traversal",
+                    "concepts": ["BFS", "Queue"],
+                },
+            },
+        }
+
+    raw_chunks = [
+        raw_chunk("problem_card", "Problem card display: Rotting Oranges BFS grid.", 0.99),
+        raw_chunk("statement", "Statement display: oranges rot level by level.", 0.72),
+        raw_chunk("solution", "Solution display: start BFS from all rotten oranges.", 0.91),
+    ]
+    if common_mistakes_chunk:
+        raw_chunks.append(raw_chunk("common_mistakes", common_mistakes_chunk, 0.98))
+
+    metadata: dict[str, object] = {}
+    if metadata_common_mistakes is not None:
+        metadata["commonMistakes"] = metadata_common_mistakes
+
+    return RetrievalCandidate(
+        id="leetcode-994",
+        title="Rotting Oranges",
+        source="hybrid",
+        score=0.97,
+        text="Candidate text should not be the selected evidence.",
+        concepts=("BFS", "Queue"),
+        problem_type="Graph Traversal",
+        payload={
+            "answer": "Use BFS from all rotten oranges.",
+            "solutionHints": ["Push all rotten oranges first."],
+            "difficulty": "Medium",
+            "constraints": ["1 <= m, n <= 10"],
+            "documentSource": "LeetCode",
+            "sourceId": "994",
+            "storePayload": {"metadata": metadata},
+            "rawChunks": raw_chunks,
+            "rawChunksComplete": True,
+        },
+    )
+
+
+def _graph_path_for_test(
+    problem_id: str,
+    concept_id: str,
+    concept_label: str,
+    *,
+    hops: int = 2,
+    score: float = 1.0,
+    path_source: str = "neo4j",
+) -> dict[str, object]:
+    nodes: list[dict[str, object]] = [
+        {"id": problem_id, "label": problem_id, "layer": "problem"},
+    ]
+    intermediate_count = max(hops - 1, 0)
+    for index in range(intermediate_count):
+        nodes.append(
+            {
+                "id": f"source:{problem_id}:{index}",
+                "label": f"source {index}",
+                "layer": "source",
+            }
+        )
+    nodes.append({"id": concept_id, "label": concept_label, "layer": "concept"})
+    relations = [
+        {
+            "source": str(nodes[index]["id"]),
+            "target": str(nodes[index + 1]["id"]),
+            "type": "REQUIRES",
+            "weight": score,
+        }
+        for index in range(len(nodes) - 1)
+    ]
+    return {
+        "nodes": nodes,
+        "relations": relations,
+        "score": score,
+        "pathSource": path_source,
+    }
+
+
+def test_prune_graph_paths_groups_by_problem_and_caps_paths():
+    prune = getattr(retrieval_pipeline, "_prune_graph_paths", None)
+    assert prune is not None
+    raw_paths = (
+        _graph_path_for_test("leetcode-994", "concept:queue", "Queue", score=0.95),
+        _graph_path_for_test("leetcode-994", "concept:bfs", "BFS", score=0.4),
+        _graph_path_for_test("leetcode-994", "concept:bfs", "BFS", score=0.9),
+        _graph_path_for_test("leetcode-994", "concept:shortest-path", "Shortest Path", score=0.8),
+        _graph_path_for_test("leetcode-1091", "concept:queue", "Queue", score=0.7),
+        _graph_path_for_test("leetcode-1091", "concept:bfs", "BFS", score=0.6),
+        _graph_path_for_test("uva-10653", "concept:bfs", "BFS", score=1.0),
+    )
+
+    pruned = prune(raw_paths, ("leetcode-994", "leetcode-1091"))
+
+    assert [_path_node_ids(path)[0] for path in pruned] == [
+        "leetcode-994",
+        "leetcode-994",
+        "leetcode-1091",
+        "leetcode-1091",
+    ]
+    assert [_path_node_ids(path)[-1] for path in pruned] == [
+        "concept:shortest-path",
+        "concept:bfs",
+        "concept:bfs",
+        "concept:queue",
+    ]
+    assert pruned[1]["score"] == 0.9
+
+
+def test_prune_graph_paths_prefers_shorter_paths_before_concept_priority():
+    prune = getattr(retrieval_pipeline, "_prune_graph_paths", None)
+    assert prune is not None
+    raw_paths = (
+        _graph_path_for_test("leetcode-994", "concept:shortest-path", "Shortest Path", hops=3),
+        _graph_path_for_test("leetcode-994", "concept:bfs", "BFS", hops=2),
+        _graph_path_for_test("leetcode-994", "concept:queue", "Queue", hops=1),
+    )
+
+    pruned = prune(raw_paths, ("leetcode-994",))
+
+    assert [_path_node_ids(path)[-1] for path in pruned] == [
+        "concept:queue",
+        "concept:bfs",
+    ]
+
+
+def test_online_pipeline_returns_pruned_graph_paths_and_keeps_raw_paths():
+    documents = _documents()
+    embedding_provider = DeterministicMockEmbeddingProvider(dimension=8)
+    pipeline = OnlineQueryPipeline(
+        documents=documents,
+        embedding_provider=embedding_provider,
+        vector_store=_build_vector_store(documents, embedding_provider),
+        bm25_store=_build_bm25_store(documents),
+        graph_store=_build_graph_store(documents),
+    )
+
+    result = pipeline.run("BFS shortest path with queue graph traversal", top_k=2)
+
+    assert result.raw_graph_paths
+    assert len(result.graph_paths) <= len(result.raw_graph_paths)
+    assert len(result.graph_paths) <= 2 * len(result.reranked_candidates)
+    assert result.graph_paths == retrieval_pipeline._prune_graph_paths(
+        result.raw_graph_paths,
+        tuple(candidate.id for candidate in result.reranked_candidates),
+    )
+
+
 def test_store_backed_bm25_filters_zero_score_candidates():
     uva = _uva_document()
     leetcode = _documents()[0]
@@ -766,12 +938,72 @@ def test_graph_search_service_can_use_graph_store():
     assert result.candidates[0].source == "graph"
     assert any(
         _path_node_ids(path) == ["leetcode-994", "source:leetcode:994", "concept:bfs"]
-        and _path_relation_types(path) == ["DERIVED_FROM_SOURCE", "MENTIONS_CONCEPT"]
+        and _path_relation_types(path) == ["DERIVED_FROM_SOURCE", "REQUIRES"]
         and path["pathSource"] == "neo4j"
         and path["storePath"]["nodes"] == ["leetcode-994", "concept:bfs"]
         and path["storePath"]["relations"] == ["REQUIRES"]
         for path in result.paths
     )
+
+
+def test_graph_relation_vocabulary_preserves_requires_and_has_pattern():
+    problem = {"id": "leetcode-994"}
+    concept = {"id": "concept:bfs"}
+    pattern = {"id": "pattern:graph-traversal"}
+
+    requires = _graph_edge(problem, concept, "requires", 1.0)
+    has_pattern = _graph_edge(problem, pattern, "HAS_PATTERN", 1.0)
+
+    assert requires["type"] == "REQUIRES"
+    assert "normalizedFrom" not in requires
+    assert has_pattern["type"] == "HAS_PATTERN"
+    assert "normalizedFrom" not in has_pattern
+
+
+def test_graph_relation_fallback_records_normalized_from_for_unknown_types():
+    problem = {"id": "leetcode-994"}
+    concept = {"id": "concept:bfs"}
+
+    edge = _graph_edge(problem, concept, "required_by", 0.7)
+
+    assert edge["type"] == "SIMILAR_BY_FEATURE"
+    assert edge["normalizedFrom"] == "REQUIRED_BY"
+
+    document = _uva_document()
+    graph_store = InMemoryGraphStore()
+    graph_store.upsert_entities(
+        (
+            EntityRecord(id=document.id, name=document.title, type="problem"),
+            EntityRecord(id="concept:bfs", name="BFS", type="algorithm"),
+        )
+    )
+    graph_store.upsert_relations(
+        (
+            RelationRecord(
+                id="concept:bfs->uva-10653",
+                source_id="concept:bfs",
+                target_id=document.id,
+                type="REQUIRED_BY",
+                weight=1.0,
+            ),
+        )
+    )
+    understanding = QueryUnderstandingService((document,)).understand("UVA-10653")
+    matched = ExactProblemMatcher((document,)).match(understanding)
+    assert matched is not None
+
+    result = GraphSearchService((document,), graph_store=graph_store).search(
+        (),
+        matched_problem=matched,
+        top_k=3,
+    )
+
+    bfs_path = next(path for path in result.paths if _path_node_ids(path)[-1] == "concept:bfs")
+    assert _path_relation_types(bfs_path) == [
+        "EXPANDED_FROM_EXACT_MATCH",
+        "MENTIONS_CONCEPT",
+    ]
+    assert bfs_path["relations"][1]["normalizedFrom"] == "REQUIRED_BY"
 
 
 def test_graph_search_service_scores_partial_store_entity_matches_by_coverage():
@@ -920,7 +1152,11 @@ def test_online_pipeline_mode_controls_fusion_sources_and_final_results(
     assert trace["bm25Candidates"]
     assert {candidate["id"] for candidate in trace["fusionScores"]} == expected_ids
     assert {candidate["id"] for candidate in trace["rerankerScores"]} == expected_ids
-    assert result.graph_paths
+    if "graph-only" in expected_ids:
+        assert result.graph_paths
+    else:
+        assert result.graph_paths == ()
+    assert result.raw_graph_paths
 
 
 def test_online_pipeline_top_k_limits_mode_specific_final_results():
@@ -1458,6 +1694,119 @@ def test_context_builder_ignores_search_text_noise_from_store_payload():
     assert alias_spam not in context
 
 
+def test_evidence_builder_selects_matched_problem_display_evidence():
+    candidate = _candidate_with_raw_chunks_for_context(
+        metadata_common_mistakes=["Mark each orange once."]
+    )
+    matched = ExactProblemMatch(
+        problem_id="leetcode-994",
+        title="Rotting Oranges",
+        source="LeetCode",
+        source_id="994",
+        match_kind="exact_problem_id",
+        confidence=1.0,
+        candidate=candidate,
+    )
+
+    evidence = EvidenceBuilder().build((candidate,), (), matched_problem=matched)
+    matched_problem = evidence.to_mapping()["matchedProblem"]
+
+    assert matched_problem["id"] == "leetcode-994"
+    assert matched_problem["solutionHints"] == ["Push all rotten oranges first."]
+    assert matched_problem["problemCard"] == {
+        "id": "leetcode-994:problem_card:0",
+        "kind": "problem_card",
+        "displayText": "Problem card display: Rotting Oranges BFS grid.",
+        "score": 0.99,
+    }
+    assert matched_problem["statement"] == {
+        "id": "leetcode-994:statement:0",
+        "kind": "statement",
+        "displayText": "Statement display: oranges rot level by level.",
+        "score": 0.72,
+    }
+    assert matched_problem["solution"] == {
+        "id": "leetcode-994:solution:0",
+        "kind": "solution",
+        "displayText": "Solution display: start BFS from all rotten oranges.",
+        "score": 0.91,
+    }
+
+
+def test_evidence_builder_selects_similar_problem_card_and_best_display_chunk():
+    candidate = _candidate_with_raw_chunks_for_context(
+        common_mistakes_chunk="- Do not mutate fresh oranges twice."
+    )
+
+    evidence = EvidenceBuilder().build((candidate,), ())
+    similar_problem = evidence.to_mapping()["similarProblems"][0]
+
+    assert similar_problem["problemCard"] == {
+        "id": "leetcode-994:problem_card:0",
+        "kind": "problem_card",
+        "displayText": "Problem card display: Rotting Oranges BFS grid.",
+        "score": 0.99,
+    }
+    assert similar_problem["matchedChunk"] == {
+        "id": "leetcode-994:solution:0",
+        "kind": "solution",
+        "displayText": "Solution display: start BFS from all rotten oranges.",
+        "score": 0.91,
+    }
+
+
+def test_context_builder_uses_display_text_not_search_text():
+    candidate = _candidate_with_raw_chunks_for_context(
+        metadata_common_mistakes=["Mark each orange once."]
+    )
+    understanding = QueryUnderstandingService().understand("BFS queue shortest path")
+
+    evidence = EvidenceBuilder().build((candidate,), ())
+    context = ContextBuilder().build(understanding, evidence)
+
+    assert "Problem card display: Rotting Oranges BFS grid." in context
+    assert "Solution display: start BFS from all rotten oranges." in context
+    assert "Mark each orange once." in context
+    assert "DO_NOT_RENDER" not in context
+    assert "searchText" not in context
+    assert "rawChunks" not in context
+    assert "storePayload" not in context
+
+
+def test_evidence_builder_reads_common_mistakes_from_metadata():
+    candidate = _candidate_with_raw_chunks_for_context(
+        metadata_common_mistakes=[
+            "Do not enqueue the same cell twice.",
+            "Do not forget the minute boundary.",
+        ],
+        common_mistakes_chunk="- Chunk value should be lower priority.",
+    )
+
+    evidence = EvidenceBuilder().build((candidate,), ())
+
+    assert evidence.to_mapping()["commonMistakes"] == [
+        "Do not enqueue the same cell twice.",
+        "Do not forget the minute boundary.",
+        "Chunk value should be lower priority.",
+    ]
+
+
+def test_evidence_builder_reads_common_mistakes_from_chunk_before_template():
+    candidate = _candidate_with_raw_chunks_for_context(
+        common_mistakes_chunk=(
+            "- Do not spread rot without level counting.\n"
+            "- Do not ignore initially empty grids."
+        )
+    )
+
+    evidence = EvidenceBuilder().build((candidate,), ())
+
+    assert evidence.to_mapping()["commonMistakes"] == [
+        "Do not spread rot without level counting.",
+        "Do not ignore initially empty grids.",
+    ]
+
+
 def test_context_builder_includes_matched_problem_separately():
     matched = ExactProblemMatcher((_uva_document(),)).match(
         QueryUnderstandingService((_uva_document(),)).understand(
@@ -1956,7 +2305,7 @@ def test_exact_match_payload_seeds_statement_answer_and_hints_in_order():
     assert [
         chunk["payload"]["kind"]
         for chunk in payload["rawChunks"]
-    ] == ["statement", "answer", "hint", "hint"]
+    ] == ["problem_card", "statement", "answer", "hint", "hint"]
     assert payload["chunkCount"] >= 3
     assert payload["rawChunksComplete"] is True
     assert payload["chunkEvidence"] == {

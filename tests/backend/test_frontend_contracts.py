@@ -100,6 +100,25 @@ def test_frontend_trace_contract_supports_multilingual_query_understanding_field
     assert "expandedTerms" in app_source
 
 
+def test_frontend_accepts_technique_concept_kind():
+    api_source = API_TS.read_text(encoding="utf-8")
+    types_source = TYPES_TS.read_text(encoding="utf-8")
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    concept_kind_body = _function_body(api_source, "function normalizeConceptKind")
+    node_type_body = _function_body(api_source, "function normalizeNodeType")
+
+    assert '"technique"' in types_source
+    assert 'value === "technique"' in concept_kind_body
+    assert 'value === "technique"' in node_type_body
+    assert 'case "technique"' in app_source
+    assert "技巧" in app_source
+    assert re.search(
+        r'name:\s*"Visited Array",\s*kind:\s*"technique"',
+        api_source,
+        flags=re.DOTALL,
+    )
+
+
 def test_app_clears_previous_result_when_new_request_starts():
     source = APP_TSX.read_text(encoding="utf-8")
     body = _function_body(source, "async function handleAnalyze")

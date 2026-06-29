@@ -20,7 +20,9 @@ from backend.app.retrieval.pipeline import (
     ExactProblemMatch,
     OnlineQueryPipeline,
     OnlineQueryResult,
+    EntityLinkingService,
     QueryUnderstanding,
+    QueryUnderstandingService,
     RetrievalCandidate,
     RetrievalDocument,
 )
@@ -113,7 +115,7 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     concepts = {concept["name"]: concept for concept in payload["requiredConcepts"]}
     assert {"BFS", "Queue", "Visited Array"}.issubset(concepts)
     assert concepts["BFS"]["kind"] == "algorithm"
-    assert concepts["Visited Array"]["kind"] == "data_structure"
+    assert concepts["Visited Array"]["kind"] == "technique"
     assert concepts["Queue"]["description"]
 
     assert any(problem["source"] == "UVa" for problem in payload["similarProblems"])
@@ -164,6 +166,19 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
     assert payload["retrievalTrace"]["graphCandidates"]
     assert payload["evidencePaths"]
     assert payload["evidenceBundle"]["graphPaths"]
+
+
+@pytest.mark.parametrize("query", ["Visited Array", "拜訪陣列", "visited 陣列"])
+def test_query_language_classifies_visited_array_aliases_as_technique(query):
+    understanding = QueryUnderstandingService().understand(query)
+    linked_entities = EntityLinkingService().link(understanding)
+    matching_seeds = [
+        seed
+        for seed in linked_entities
+        if seed.get("entityId") == "concept:visited-array"
+    ]
+    assert matching_seeds
+    assert {seed.get("entityType") for seed in matching_seeds} == {"technique"}
 
 
 def test_detect_graph_traversal_signals_supports_multilingual_shortest_path_terms():
@@ -318,6 +333,39 @@ def test_analysis_debug_mode_includes_context_preview_and_retrieval_backend():
         "provider": "mock",
         "model": "BAAI/bge-reranker-v2-m3",
     }
+
+
+def test_debug_trace_contains_raw_graph_paths_but_evidence_uses_pruned_paths():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "BFS shortest path queue graph traversal"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    raw_paths = payload["retrievalTrace"].get("rawGraphPaths")
+    graph_paths = payload["evidenceBundle"].get("graphPaths")
+    assert raw_paths
+    assert graph_paths
+    assert len(graph_paths) <= len(raw_paths)
+    assert "contextPreview" in payload
+    assert payload["commonMistakes"] == payload["evidenceBundle"]["commonMistakes"]
+
+
+def test_non_debug_trace_does_not_expose_raw_graph_paths():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis",
+        json={"input": "BFS shortest path queue graph traversal"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "rawGraphPaths" not in payload["retrievalTrace"]
+    assert "contextPreview" not in payload
 
 
 def test_analysis_debug_mode_uses_configured_runtime_retrieval():

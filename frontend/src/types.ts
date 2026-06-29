@@ -12,7 +12,7 @@ export interface AnalysisRequest {
 export interface RequiredConcept {
   id: string;
   name: string;
-  kind: "algorithm" | "data_structure" | "pattern" | "concept";
+  kind: "algorithm" | "data_structure" | "pattern" | "technique" | "concept";
   description: string;
 }
 
@@ -28,7 +28,7 @@ export interface SimilarProblem {
 export interface EvidenceNode {
   id: string;
   label: string;
-  type: "problem" | "concept" | "algorithm" | "data_structure" | "pattern";
+  type: "problem" | "concept" | "algorithm" | "data_structure" | "pattern" | "technique";
 }
 
 export interface EvidenceEdge {

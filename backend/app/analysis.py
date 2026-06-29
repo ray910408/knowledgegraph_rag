@@ -222,7 +222,7 @@ def graph_traversal_concepts() -> tuple[RequiredConcept, ...]:
         RequiredConcept(
             id="visited-array",
             name="Visited Array",
-            kind="data_structure",
+            kind="technique",
             description="\u8a18\u9304\u5df2\u7d93\u5165\u968a\u6216\u8655\u7406\u904e\u7684\u7bc0\u9ede\uff0c\u907f\u514d\u91cd\u8907\u64f4\u5c55\u3002",
         ),
     )

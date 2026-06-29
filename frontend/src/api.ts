@@ -174,7 +174,7 @@ const fallbackResponse: AnalysisResponse = {
     {
       id: "visited-array",
       name: "Visited Array",
-      kind: "data_structure",
+      kind: "technique",
       description: "記錄已入隊或已處理的格子，避免重複擴展。"
     }
   ],
@@ -305,7 +305,13 @@ function normalizeInputKind(value: unknown): InputKind {
 }
 
 function normalizeConceptKind(value: unknown): RequiredConcept["kind"] {
-  if (value === "algorithm" || value === "data_structure" || value === "pattern" || value === "concept") {
+  if (
+    value === "algorithm" ||
+    value === "data_structure" ||
+    value === "pattern" ||
+    value === "technique" ||
+    value === "concept"
+  ) {
     return value;
   }
   return "concept";
@@ -317,6 +323,7 @@ function normalizeNodeType(value: unknown): EvidenceNode["type"] {
     value === "concept" ||
     value === "algorithm" ||
     value === "data_structure" ||
+    value === "technique" ||
     value === "pattern"
   ) {
     return value;
