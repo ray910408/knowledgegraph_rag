@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from backend.app.ingestion.pipeline import build_ingestion_artifacts
+from backend.app.chunking.search_text import build_chunk_search_text
+from backend.app.contracts import RawProblem
+from backend.app.chunking.router import ChunkingRouter
+from backend.app.ingestion.pipeline import _build_chunks, build_ingestion_artifacts
 from backend.app.providers import DeterministicMockEmbeddingProvider
 
 
@@ -55,6 +60,27 @@ def _write_raw_problem(path: Path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _structured_problem(**overrides) -> RawProblem:
+    payload = {
+        "id": "leetcode-994",
+        "source": "LeetCode",
+        "source_id": "994",
+        "title": "Rotting Oranges",
+        "problem_type": "Graph Traversal",
+        "statement": "Use BFS to spread rot across the grid.",
+        "answer": "Run multi-source BFS from the rotten oranges.",
+        "solution_hints": ("Push all rotten oranges first.", "Expand one BFS layer per minute."),
+        "concepts": ("BFS", "Queue"),
+        "tags": ("matrix", "graph"),
+        "metadata": {"difficulty": "Medium"},
+        "constraints": ("1 <= m, n <= 10",),
+        "examples": ({"input": "grid = [[2,1,1],[1,1,0],[0,1,1]]", "output": "4"},),
+        "editorial": "Each BFS layer represents one minute.",
+    }
+    payload.update(overrides)
+    return RawProblem(**payload)
+
+
 def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
     raw_dir = tmp_path / "raw"
     processed_dir = tmp_path / "processed"
@@ -92,7 +118,7 @@ def test_ingestion_builds_processed_json_and_search_artifacts(tmp_path):
     assert problems[0]["id"] == "leetcode-994-a"
     assert problems[0]["title"] == "Rotting Oranges"
     assert problems[0]["statement"] == "多源 BFS 使用 Queue 逐層擴散。"
-    assert {chunk["kind"] for chunk in chunks} >= {"statement", "answer"}
+    assert {chunk["kind"] for chunk in chunks} >= {"problem_card", "statement", "solution"}
     assert "concept:bfs" in {entity["id"] for entity in entities}
     assert any(relation["type"] == "REQUIRES" for relation in relations)
     assert bm25["documents"][0]["id"] == chunks[0]["id"]
@@ -142,10 +168,16 @@ def test_ingestion_enriches_vector_and_bm25_payloads(tmp_path):
     bm25 = json.loads((processed_dir / "bm25_index.json").read_text(encoding="utf-8"))
     qdrant = json.loads((processed_dir / "qdrant_vectors.json").read_text(encoding="utf-8"))
     neo4j = json.loads((processed_dir / "neo4j_graph.json").read_text(encoding="utf-8"))
-    search_text = bm25["documents"][0]["text"]
+    statement_bm25 = next(
+        document for document in bm25["documents"] if document["payload"]["kind"] == "statement"
+    )
+    statement_qdrant = next(
+        record for record in qdrant["records"] if record["payload"]["kind"] == "statement"
+    )
+    search_text = statement_bm25["text"]
     for payload in (
-        bm25["documents"][0]["payload"],
-        qdrant["records"][0]["payload"],
+        statement_bm25["payload"],
+        statement_qdrant["payload"],
     ):
         assert payload["answer"] == "Use BFS from all rotten oranges."
         assert payload["solutionHints"] == ["Push all rotten oranges first."]
@@ -167,14 +199,188 @@ def test_ingestion_enriches_vector_and_bm25_payloads(tmp_path):
     assert "廣搜" in search_text
     assert "佇列" in search_text
     assert "隊列" in search_text
-    assert qdrant["records"][0]["payload"]["text"] == "Multi-source BFS with a queue on a grid."
-    assert qdrant["records"][0]["vector"] == list(
+    assert statement_bm25["text"] == statement_bm25["payload"]["searchText"]
+    assert statement_qdrant["payload"]["text"] == "Multi-source BFS with a queue on a grid."
+    assert statement_qdrant["payload"]["displayText"] == "Multi-source BFS with a queue on a grid."
+    assert statement_qdrant["payload"]["searchText"] == search_text
+    assert statement_qdrant["vector"] == list(
         DeterministicMockEmbeddingProvider().embed_text(search_text)
     )
 
     bfs_entity = next(entity for entity in neo4j["entities"] if entity["id"] == "concept:bfs")
     assert "廣搜" in bfs_entity["aliases"]
     assert "廣度優先搜尋" in bfs_entity["aliases"]
+
+
+def test_build_chunks_skips_whitespace_only_fields_before_serialization_output():
+    problem = RawProblem(
+        id="leetcode-994",
+        source="LeetCode",
+        source_id="994",
+        title="Rotting Oranges",
+        problem_type="Graph Traversal",
+        statement="   \n\t  ",
+        answer="Use BFS from all rotten oranges.",
+        solution_hints=("   ", "\t"),
+        concepts=("BFS",),
+        editorial="  \n  ",
+    )
+
+    serialized_chunks = [chunk.to_mapping() for chunk in _build_chunks((problem,))]
+
+    assert [chunk["kind"] for chunk in serialized_chunks] == ["problem_card", "solution"]
+    assert serialized_chunks[1]["text"] == "Use BFS from all rotten oranges."
+
+
+def test_build_chunks_routes_raw_problem_through_chunking_router(monkeypatch):
+    calls: list[tuple[RawProblem, str]] = []
+
+    class SpyRouter:
+        def chunk_problem(self, problem, *, runtime_type="structured_problem"):
+            calls.append((problem, runtime_type))
+            return (
+                RawProblem,  # sentinel to prove _build_chunks uses the router output directly
+            )
+
+    monkeypatch.setattr(
+        "backend.app.ingestion.pipeline.ChunkingRouter",
+        SpyRouter,
+        raising=False,
+    )
+
+    chunks = _build_chunks((_structured_problem(),))
+
+    assert calls == [(_structured_problem(), "structured_problem")]
+    assert chunks == (RawProblem,)
+
+
+def test_structured_problem_chunking_emits_problem_card_and_merged_hints():
+    serialized_chunks = [chunk.to_mapping() for chunk in _build_chunks((_structured_problem(),))]
+    kinds = [chunk["kind"] for chunk in serialized_chunks]
+
+    assert kinds == [
+        "problem_card",
+        "statement",
+        "constraints",
+        "examples",
+        "hints",
+        "solution",
+    ]
+    assert serialized_chunks[0]["id"] == "leetcode-994:problem_card:0"
+    assert "LeetCode 994" in serialized_chunks[0]["text"]
+    assert "Rotting Oranges" in serialized_chunks[0]["text"]
+    assert "Graph Traversal" in serialized_chunks[0]["text"]
+    assert "Medium" in serialized_chunks[0]["text"]
+    assert "matrix" in serialized_chunks[0]["text"]
+    assert serialized_chunks[4]["id"] == "leetcode-994:hints:0"
+    assert serialized_chunks[4]["text"] == (
+        "Push all rotten oranges first.\nExpand one BFS layer per minute."
+    )
+
+
+def test_build_chunk_search_text_uses_display_lane_only():
+    problem = _structured_problem(
+        metadata={
+            "difficulty": "Medium",
+            "commonMistakes": ["Do not leak this template mistake into retrieval text."],
+            "commonMistakesSource": "template",
+        }
+    )
+
+    search_text = build_chunk_search_text(
+        problem_id=problem.id,
+        source=problem.source,
+        source_id=problem.source_id,
+        title=problem.title,
+        problem_type=problem.problem_type,
+        concepts=problem.concepts,
+        display_text=problem.statement,
+    )
+
+    assert problem.statement in search_text
+    assert "Rotting Oranges" in search_text
+    assert "Graph Traversal" in search_text
+    assert "graph traversal" in search_text
+    assert "Do not leak this template mistake into retrieval text." not in search_text
+
+
+def test_structured_problem_chunking_sets_display_and_search_text_lanes():
+    chunks = [chunk.to_mapping() for chunk in _build_chunks((_structured_problem(),))]
+    statement_chunk = next(chunk for chunk in chunks if chunk["kind"] == "statement")
+
+    assert statement_chunk["text"] == "Use BFS to spread rot across the grid."
+    assert statement_chunk["displayText"] == "Use BFS to spread rot across the grid."
+    assert statement_chunk["searchText"] == build_chunk_search_text(
+        problem_id="leetcode-994",
+        source="LeetCode",
+        source_id="994",
+        title="Rotting Oranges",
+        problem_type="Graph Traversal",
+        concepts=("BFS", "Queue"),
+        display_text="Use BFS to spread rot across the grid.",
+    )
+
+
+def test_structured_problem_chunking_skips_empty_optional_sections_and_template_common_mistakes():
+    serialized_chunks = [
+        chunk.to_mapping()
+        for chunk in _build_chunks(
+            (
+                _structured_problem(
+                    constraints=("   ", "\n\t"),
+                    examples=(),
+                    solution_hints=("   ", "\n"),
+                    answer="  ",
+                    editorial=" \n ",
+                    metadata={
+                        "difficulty": "Medium",
+                        "commonMistakes": ["Do not mutate the template bullet list."],
+                        "commonMistakesSource": "template",
+                    },
+                ),
+            )
+        )
+    ]
+
+    assert [chunk["kind"] for chunk in serialized_chunks] == ["problem_card", "statement"]
+    assert all(
+        "Do not mutate the template bullet list." not in chunk["searchText"]
+        for chunk in serialized_chunks
+    )
+
+
+def test_chunking_router_module_supports_structured_problem_runtime_only():
+    spec = importlib.util.find_spec("backend.app.chunking.router")
+
+    assert spec is not None
+    router_module = importlib.import_module("backend.app.chunking.router")
+    assert router_module.ChunkingRouter.supported_runtime_types() == ("structured_problem",)
+
+
+def test_chunking_router_dispatches_structured_problem_runtime():
+    router = ChunkingRouter()
+
+    chunks = router.chunk_problem(_structured_problem(), runtime_type="structured_problem")
+
+    assert [chunk.kind for chunk in chunks] == [
+        "problem_card",
+        "statement",
+        "constraints",
+        "examples",
+        "hints",
+        "solution",
+    ]
+
+
+def test_chunking_router_rejects_unsupported_runtime_type():
+    router = ChunkingRouter()
+
+    try:
+        router.chunk_problem(_structured_problem(), runtime_type="raw_problem")
+    except ValueError as exc:
+        assert str(exc) == "unsupported chunking runtime type: raw_problem"
+    else:
+        raise AssertionError("expected ValueError for unsupported runtime type")
 
 
 def test_ingestion_cli_supports_json_target(tmp_path):

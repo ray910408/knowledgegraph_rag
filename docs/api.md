@@ -209,10 +209,11 @@ matchedProblem
 注意事項：
 
 - `candidateSource` 只在 `debug=true` 時出現。
-- `vectorCandidates`、`bm25Candidates` 的 `payload` 可能包含 `answer`、`solutionHints`、`difficulty`、`constraints`、`examples`、`editorial`、`documentSource`、`sourceId`、`title`、`problemType`、`concepts`。
+- `vectorCandidates`、`bm25Candidates` 的 `payload` 可能包含 `answer`、`solutionHints`、`difficulty`、`constraints`、`examples`、`editorial`、`documentSource`、`sourceId`、`title`、`problemType`、`concepts`、`displayText`、`searchText`。
 - raw store payload 會保留在 `storePayload`。
 - `bm25Candidates` 只會保留 `score > 0` 的候選。
 - 所有候選與 graph path 的分數都會帶 `scoreMeta`，不同 stage 的分數不能直接互相比較。
+- `searchText` 是 index-only lane，debug payload 可能會保留它做驗證，但 UI 與人工閱讀內容應優先使用 `text` / `displayText`。
 
 若有 store adapter 相容性診斷，debug trace 也會包含：
 
@@ -265,7 +266,7 @@ POST /api/analysis?debug=true
 - `candidateSource`
 - `compatibilityWarnings`
 
-`contextPreview` 會使用 enriched payload 與 graph path rationale 組成 LLM prompt context。非 debug response 不會回傳它。
+`contextPreview` 會使用 enriched payload、display/context lane 與 graph path rationale 組成 LLM prompt context，不會直接把 `searchText` alias expansion 回傳給前端。非 debug response 不會回傳它。
 
 ## Recommendations
 

@@ -7,9 +7,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
+from ..chunking import ChunkingRouter
+from ..chunking.search_text import build_chunk_search_text
 from ..contracts import EntityRecord, ProblemChunk, RawProblem, RelationRecord
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
-from ..query_language import build_search_text, concept_search_aliases, shared_multilingual_tokens
+from ..query_language import concept_search_aliases, shared_multilingual_tokens
 from ..stores import GraphStore, VectorRecord, VectorStore
 
 
@@ -158,47 +160,10 @@ def _metadata_difficulty(metadata: dict[str, Any]) -> str | None:
 
 
 def _build_chunks(problems: tuple[RawProblem, ...]) -> tuple[ProblemChunk, ...]:
+    router = ChunkingRouter()
     chunks: list[ProblemChunk] = []
     for problem in problems:
-        fields = [
-            ("statement", problem.statement),
-            ("answer", problem.answer),
-            *(
-                (f"hint-{index}", hint)
-                for index, hint in enumerate(problem.solution_hints)
-            ),
-        ]
-        if problem.editorial:
-            fields.append(("editorial", problem.editorial))
-        for index, (kind, text) in enumerate(fields):
-            if not text:
-                continue
-            chunks.append(
-                ProblemChunk(
-                    id=f"{problem.id}:{kind}:{index}",
-                    problem_id=problem.id,
-                    kind="hint" if kind.startswith("hint-") else kind,
-                    text=text,
-                    index=index,
-                    concepts=problem.concepts,
-                    metadata={
-                        "source": problem.source,
-                        "sourceId": problem.source_id,
-                        "title": problem.title,
-                        "problemType": problem.problem_type,
-                    },
-                    answer=problem.answer,
-                    solution_hints=problem.solution_hints,
-                    difficulty=problem.difficulty or _metadata_difficulty(problem.metadata),
-                    constraints=problem.constraints,
-                    examples=problem.examples,
-                    editorial=problem.editorial,
-                    source=problem.source,
-                    source_id=problem.source_id,
-                    title=problem.title,
-                    problem_type=problem.problem_type,
-                )
-            )
+        chunks.extend(router.chunk_problem(problem, runtime_type="structured_problem"))
     return tuple(chunks)
 
 
@@ -281,7 +246,7 @@ def _extract_entities_and_relations(
 def _write_bm25_index(path: Path, chunks: tuple[ProblemChunk, ...]) -> None:
     documents: list[dict[str, Any]] = []
     for chunk in chunks:
-        search_text = _bm25_search_text(chunk)
+        search_text = _chunk_search_text(chunk)
         documents.append(
             {
                 "id": chunk.id,
@@ -294,21 +259,17 @@ def _write_bm25_index(path: Path, chunks: tuple[ProblemChunk, ...]) -> None:
     _write_json(path, {"documents": documents})
 
 
-def _bm25_search_text(chunk: ProblemChunk) -> str:
-    source = chunk.source or str(chunk.metadata.get("source") or "")
-    source_id = chunk.source_id or str(chunk.metadata.get("sourceId") or "")
-    title = chunk.title or str(chunk.metadata.get("title") or "")
-    problem_type = chunk.problem_type or str(chunk.metadata.get("problemType") or "")
-    return _clean_text(
-        build_search_text(
-            problem_id=chunk.problem_id,
-            source=source,
-            source_id=source_id,
-            title=title,
-            problem_type=problem_type,
-            concepts=chunk.concepts,
-            display_text=chunk.text,
-        )
+def _chunk_search_text(chunk: ProblemChunk) -> str:
+    if chunk.search_text:
+        return _clean_text(chunk.search_text)
+    return build_chunk_search_text(
+        problem_id=chunk.problem_id,
+        source=chunk.source or str(chunk.metadata.get("source") or ""),
+        source_id=chunk.source_id or str(chunk.metadata.get("sourceId") or ""),
+        title=chunk.title or str(chunk.metadata.get("title") or ""),
+        problem_type=chunk.problem_type or str(chunk.metadata.get("problemType") or ""),
+        concepts=chunk.concepts,
+        display_text=chunk.display_text or chunk.text,
     )
 
 
@@ -319,7 +280,7 @@ def _build_qdrant_vectors(
     records: list[dict[str, Any]] = []
     vector_records: list[VectorRecord] = []
     for chunk in chunks:
-        search_text = _bm25_search_text(chunk)
+        search_text = _chunk_search_text(chunk)
         vector = tuple(embedding_provider.embed_text(search_text))
         payload = chunk.to_mapping()
         records.append(

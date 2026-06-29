@@ -1426,6 +1426,38 @@ def test_context_builder_includes_enriched_candidate_evidence():
     assert "常見錯誤" in context
 
 
+def test_context_builder_ignores_search_text_noise_from_store_payload():
+    alias_spam = "ALIAS_SPAM bfs breadth-first-search queue alias spam repeated"
+    candidate = RetrievalCandidate(
+        id="leetcode-994",
+        title="Rotting Oranges",
+        source="hybrid",
+        score=0.97,
+        text="Multi-source BFS with a queue on a grid.",
+        concepts=("BFS", "Queue"),
+        problem_type="Graph Traversal",
+        payload={
+            "text": "Multi-source BFS with a queue on a grid.",
+            "displayText": "Multi-source BFS with a queue on a grid.",
+            "searchText": f"Multi-source BFS with a queue on a grid. {alias_spam} {alias_spam}",
+            "answer": "Use BFS from all rotten oranges.",
+            "solutionHints": ["Push all rotten oranges first."],
+            "difficulty": "Medium",
+            "constraints": ["1 <= m, n <= 10"],
+            "documentSource": "LeetCode",
+            "sourceId": "994",
+        },
+    )
+    understanding = QueryUnderstandingService().understand("BFS queue shortest path")
+
+    evidence = EvidenceBuilder().build((candidate,), ())
+    context = ContextBuilder().build(understanding, evidence)
+
+    assert "Use BFS from all rotten oranges." in context
+    assert "Push all rotten oranges first." in context
+    assert alias_spam not in context
+
+
 def test_context_builder_includes_matched_problem_separately():
     matched = ExactProblemMatcher((_uva_document(),)).match(
         QueryUnderstandingService((_uva_document(),)).understand(

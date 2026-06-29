@@ -25,6 +25,7 @@
 - runtime stores 檢查需使用 `PROCESSED_PROBLEMS_PATH=data/processed/problems.json`，確保線上 API 路徑真的讀到 processed runtime documents。
 - 這一階段的 Query Understanding 仍維持 rule-based。若未來要加翻譯或 LLM，必須是 additive，不可拿翻譯結果覆蓋原始 query。
 - 評估時記錄錯誤類型，例如 graph edge 缺失、label 錯誤、embedding 弱匹配、問題敘述含糊、LLM 用詞問題。
+- `ProblemStatementChunker`、`GenericFallbackChunker`、`CodeChunker` 目前是 lab-only，評估只要求它們的單元測試與 runtime import guard，不把它們算進正式 ingestion / retrieval rollout。
 
 ## 這個分支的最低驗收
 
@@ -33,6 +34,7 @@
 - `VectorSearchService` 使用 `queryVariants["vector"]`。
 - `EntityLinkingService` 能直接吃 `graphSeeds`，`GraphSearchService` 沒有 exact matched problem 也能走概念種子。
 - ingestion 產出的 `bm25_index.json` 與 `qdrant_vectors.json` 都用 bilingual `searchText`，不是只靠原始 chunk 文字。
+- `contextPreview` 與 `ContextBuilder` 不得洩漏 `searchText` alias expansion 或 template-derived `commonMistakes`。
 
 ## 驗證指令
 
