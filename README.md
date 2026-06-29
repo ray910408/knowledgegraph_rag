@@ -2,7 +2,7 @@
 
 這個專案把 CPE / LeetCode 題庫整理成可解釋的演算法檢索系統。核心分成兩條流程：
 
-- 離線建庫：清理原始題目、切 chunk、產生 `problems.json`、`bm25_index.json`、`qdrant_vectors.json`、`neo4j_graph.json`。
+- 離線建庫：清理原始題目、用 structured chunking 產生題目卡 / 題敘 / 限制 / 範例 / 提示 / 解法等區塊，並輸出 `problems.json`、`chunks.json`、`bm25_index.json`、`qdrant_vectors.json`、`neo4j_graph.json`。
 - 線上查詢：理解使用者輸入，並行執行 BM25、向量、圖譜三路檢索，再融合、重排、整理證據與回答。
 
 ## 文件導覽
@@ -18,7 +18,7 @@
 ```mermaid
 flowchart TD
   A["CPE / LeetCode 題庫資料"] --> B["資料清理與標準化"]
-  B --> C["Chunking<br/>題目敘述 / 題解 / 概念說明"]
+  B --> C["Chunking<br/>題目卡 / 題敘 / 限制 / 範例 / 提示 / 解法"]
   B --> D["Entity 與 Relation 抽取"]
   B --> E["Raw / Processed JSON"]
   C --> F["Embedding Model<br/>bge-m3"]
@@ -64,6 +64,11 @@ data/processed/neo4j_graph.json
 data/processed/manifest.json
 ```
 
+補充：
+
+- `chunks.json` 的每筆 chunk 目前同時帶 `text` / `displayText`（顯示 lane）與 `searchText`（索引 lane）。
+- runtime ingestion 目前只接 `StructuredProblemChunker`；`ProblemStatementChunker`、`GenericFallbackChunker`、`CodeChunker` 仍是 lab-only，只有單元測試覆蓋，沒有接進 `/api/analysis`。
+
 ## 多語查詢理解與雙語擴展
 
 `backend/app/query_language.py` 會在正式檢索前先建立 `QueryLanguageProfile`，處理這個分支新增的多語查詢能力：
@@ -91,21 +96,21 @@ data/processed/manifest.json
 
 ```mermaid
 flowchart TD
-  A["使用者輸入<br/>題目 / 題號 / 關鍵字 / 程式碼"] --> B["Query Understanding<br/>語言偵測、詞組抽取、概念推導、查詢變體"]
+  A["使用者輸入<br/>題目 / 程式碼 / 關鍵字 / 問題"] --> B["Query Understanding<br/>語言判斷、concept seeds、query variants"]
   B --> C["Query Embedding"]
   B --> D["Entity Linking<br/>Problem / Concept / Pattern"]
   B --> E["BM25 Query"]
   C --> F["Vector Search<br/>Qdrant"]
   D --> G["Graph Search<br/>Neo4j"]
   E --> H["BM25 Search"]
-  F --> I["Hybrid Fusion<br/>合併、去重、分數正規化"]
+  F --> I["Hybrid Fusion<br/>分數正規化與來源去重"]
   G --> I
   H --> I
-  I --> J["Reranker<br/>重排候選證據"]
-  J --> K["Evidence Builder<br/>整理相似題、圖譜路徑、演算法證據"]
-  K --> L["Context Builder<br/>組成 LLM Prompt Context"]
+  I --> J["Reranker<br/>最終候選排序"]
+  J --> K["Evidence Builder<br/>相似題 / graph path / 證據欄位"]
+  K --> L["Context Builder<br/>整理 LLM Prompt Context"]
   L --> M["LLM Response Generator"]
-  M --> N["輸出<br/>題目理解 / 演算法推薦 / 相似題 / 分層提示 / 常見錯誤"]
+  M --> N["分析回應<br/>題目理解 / 證據摘要 / 相似題 / 解題提示 / 常見錯誤"]
 ```
 
 三條檢索路徑在這個分支的行為如下：

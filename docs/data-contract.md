@@ -4,10 +4,10 @@
 
 ### 識別欄位
 
-- `id`：跨系統的 canonical identifier，例如 `leetcode-1091`、`uva-10653`
-- `sourceId`：來源站點自己的 identifier，例如 `1091`、`10653`
+- `id`：跨系統的 canonical identifier，例如 `leetcode-1091`、`uva-10653`。
+- `sourceId`：來源站點自己的 identifier，例如 `1091`、`10653`。
 
-所有 join 都以 `id` 為主，`sourceId` 保留給顯示與來源站點參照。
+所有 join 都以 `id` 為主；`sourceId` 保留給顯示與來源站點參照。
 
 `data/raw/*.json` 可以是單一 object、array，或 `{ "problems": [...] }`。
 
@@ -75,6 +75,8 @@ id
 problemId
 kind
 text
+displayText
+searchText
 index
 answer
 solutionHints
@@ -93,13 +95,23 @@ metadata
 `kind` 可為：
 
 ```text
+problem_card
 statement
-answer
-hint
-editorial
+constraints
+examples
+hints
+solution
+common_mistakes
 ```
 
-`text` 是乾淨的顯示文字。離線檢索用的 bilingual `searchText` 不會回寫覆蓋這個欄位。
+`text` 在 rollout 1 中維持為 `displayText` 的 legacy alias。
+
+補充契約：
+
+- `displayText` 是乾淨的 display/context lane，提供 UI、evidence、`contextPreview` 與其他人類可讀輸出使用。
+- `searchText` 是 index-only lane，只提供 BM25 與向量 embedding 使用。
+- `text == displayText`，避免既有依賴在 rollout 期間破壞。
+- template-derived `commonMistakes` 不得進入 `searchText`。若 `commonMistakesSource == "template"`，該段不得被納入索引文字。
 
 ### `entities.json`
 
@@ -170,6 +182,11 @@ payload
 - `tokens`：由 `shared_multilingual_tokens()` 產生，會先保留中文精確詞組，再補 ASCII tokens。
 - `payload`：原始 chunk mapping，保留乾淨顯示內容與 enriched evidence 欄位。
 
+補充契約：
+
+- `bm25_index.json.documents[*].text == chunk.searchText`。
+- `documents[*].payload.displayText` 與 `documents[*].payload.text` 必須保持乾淨顯示文字，不回寫 alias expansion。
+
 `payload` 會帶：
 
 ```text
@@ -204,6 +221,11 @@ id
 vector
 payload
 ```
+
+補充契約：
+
+- Qdrant vectors 一律由 `searchText` 產生，不直接使用 `displayText` / `text`。
+- `records[*].payload.searchText` 會保留 index lane，方便驗證與除錯。
 
 注意：
 
@@ -445,4 +467,8 @@ matchedProblem
 - enriched candidate payload 的 `answer`、`solutionHints`、`difficulty`、`constraints`
 - graph path 的 `rationale`
 
-當 `similarProblems` 為空時，`ContextBuilder` 會直接省略 `相似題` 區段，不會輸出空標題。
+Context guardrail：
+
+- `ContextBuilder` 必須只讀取 display/context lane 與 evidence lane。
+- `ContextBuilder` 不得直接消費任何 chunk `searchText`。
+- 當 `similarProblems` 為空時，`ContextBuilder` 會直接省略 `相似題` 區段，不會輸出空標題。

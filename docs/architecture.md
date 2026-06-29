@@ -1,114 +1,125 @@
-# 架構說明
+# 系統架構
 
-本專案把題庫資料做成可解釋的演算法檢索系統。設計上分成兩段：
+本專案是一個以程式題檢索為主的 GraphRAG 原型：離線 ingestion 先整理題目資料與檢索 artifacts，線上 retrieval 再把 lexical、vector、graph 三條訊號融合，最後輸出分析結果。
 
-- 離線建庫流程：把原始題目轉成可供 BM25、向量、圖譜使用的 artifacts。
-- 線上查詢流程：先理解查詢，再執行三路檢索、融合、重排，最後整理證據與回答。
+- 離線 ingestion 會產生可供 BM25、Qdrant、Neo4j 與 runtime 載入的 artifacts。
+- 線上 retrieval 會保留查詢理解、候選來源、graph path、evidence bundle 與 context preview 等可除錯資訊。
 
-## 離線建庫流程
+## 離線 ingestion 架構
 
 ```mermaid
 flowchart TD
-  A["CPE / LeetCode 題庫資料"] --> B["資料清理與標準化"]
-  B --> C["Chunking<br/>題目敘述 / 題解 / 概念說明"]
+  A["CPE / LeetCode 原始題目"] --> B["資料清理與標準化"]
+  B --> C["Chunking<br/>題目卡 / 題敘 / 提示 / 解法"]
   B --> D["Entity 與 Relation 抽取"]
   B --> E["Raw / Processed JSON"]
   C --> F["Embedding Model<br/>bge-m3"]
   F --> G["Vector DB<br/>Qdrant"]
-  D --> H["Knowledge Graph 建構"]
+  D --> H["Knowledge Graph 建模"]
   H --> I["Graph DB<br/>Neo4j"]
 ```
 
-主要實作位置：
+主要模組：
 
 - `backend/app/ingestion/`：ingestion CLI 與 artifact builder。
 - `backend/app/contracts.py`：`RawProblem`、`ProblemChunk`、`EntityRecord`、`RelationRecord` 等資料契約。
 - `backend/app/providers.py`：`EmbeddingProvider` 與 `DeterministicMockEmbeddingProvider`。
 - `backend/app/stores.py`：`VectorStore`、`GraphStore`、`BM25Store` 介面。
 - `backend/app/adapters/`：in-memory、Qdrant、Neo4j adapter。
-- `backend/app/query_language.py`：多語 alias、概念推導、查詢變體建構。
+- `backend/app/query_language.py`：雙語 alias、query expansion 與 search-text 組裝規則。
+- `backend/app/chunking/router.py`：runtime chunking entry，目前只註冊 `structured_problem`。
 
-在這個分支，離線流程多了一層雙語檢索文字建構：
+### Chunk lane split
 
-- `_bm25_search_text()` 透過 `build_search_text()` 把 `problemId`、`source`、`sourceId`、`title`、`problemType`、`concepts`、雙語 alias、原始 chunk 文字組成 `searchText`。
-- `bm25_index.json` 寫入的是這份 `searchText`，而不是只存原始 chunk。
-- `qdrant_vectors.json` 的向量也是對 `searchText` 做 embedding，不是直接對 `chunk.text` 做 embedding。
-- `payload` 仍保留乾淨的顯示文字與 chunk 欄位，不會把原始內容粗暴翻譯後覆蓋。
+- `StructuredProblemChunker` 先產生乾淨的 `displayText`，這是 display/context lane。
+- `StructuredProblemChunker` 目前會輸出 `problem_card`、`statement`、`constraints`、`examples`、`hints`、`solution`；template-only `commonMistakes` 不會變成 runtime chunk。
+- `build_chunk_search_text()` 與 `build_search_text()` 會基於題目 metadata、concept alias 與 `displayText` 組出 bilingual `searchText`，這是 index-only lane。
+- `text` 在 rollout 期間維持等於 `displayText`，避免既有依賴被破壞。
+- template-derived `commonMistakes` 不得進入 `searchText`；若來源是 template，就不能把這些內容拿去建立索引文字。
 
-這樣做的目的很直接，中文查詢可以打中英文 alias，英文查詢也可以吃到中文概念，同時保留乾淨的顯示內容。
+### Lab-only chunkers
 
-## 線上查詢流程
+- `backend/app/chunking/problem_statement.py`、`fallback.py`、`code.py`、`optional_parser.py` 是實驗中的 lab-only chunkers。
+- 這些 chunkers 目前只有單元測試覆蓋，沒有接進 `backend/app/ingestion/pipeline.py`、`backend/app/retrieval/pipeline.py` 或 `/api/analysis` runtime。
+
+### Index artifacts
+
+- `bm25_index.json.documents[*].text` 必須等於對應 chunk 的 `searchText`，而不是臨時從 `chunk.text` 重組。
+- `qdrant_vectors.json` 的向量必須由 `searchText` 產生，不是直接對 `displayText` / `chunk.text` 做 embedding。
+- chunk payload 仍保留乾淨的 `text` / `displayText` 與其他 evidence 欄位，不會把 alias expansion 或 template common mistakes 回寫到顯示 lane。
+
+這樣做的目的很直接：中文查詢可以打中英文 alias，英文查詢也可以吃到中文概念，同時保留乾淨的顯示內容。
+
+## 線上 retrieval 架構
 
 ```mermaid
 flowchart TD
-  A["使用者輸入<br/>題目 / 題號 / 關鍵字 / 程式碼"] --> B["Query Understanding<br/>語言偵測、詞組抽取、概念推導、查詢變體"]
+  A["使用者輸入<br/>題目 / 程式碼 / 關鍵字 / 問題"] --> B["Query Understanding<br/>語言判斷、concept seeds、query variants"]
   B --> C["Query Embedding"]
   B --> D["Entity Linking<br/>Problem / Concept / Pattern"]
   B --> E["BM25 Query"]
   C --> F["Vector Search<br/>Qdrant"]
   D --> G["Graph Search<br/>Neo4j"]
   E --> H["BM25 Search"]
-  F --> I["Hybrid Fusion<br/>合併、去重、分數正規化"]
+  F --> I["Hybrid Fusion<br/>分數正規化與來源去重"]
   G --> I
   H --> I
-  I --> J["Reranker<br/>重排候選證據"]
-  J --> K["Evidence Builder<br/>整理相似題、圖譜路徑、演算法證據"]
-  K --> L["Context Builder<br/>組成 LLM Prompt Context"]
+  I --> J["Reranker<br/>最終候選排序"]
+  J --> K["Evidence Builder<br/>相似題 / graph path / 證據欄位"]
+  K --> L["Context Builder<br/>整理 LLM Prompt Context"]
   L --> M["LLM Response Generator"]
-  M --> N["輸出<br/>題目理解 / 演算法推薦 / 相似題 / 分層提示 / 常見錯誤"]
+  M --> N["分析回應<br/>題目理解 / 證據摘要 / 相似題 / 解題提示 / 常見錯誤"]
 ```
 
-`backend/app/retrieval/pipeline.py` 仍然維持服務拆分，但 `QueryUnderstandingService` 與檢索服務的責任變得更清楚：
+`backend/app/retrieval/pipeline.py` 的責任分工如下：
 
-- `QueryUnderstandingService`：正規化查詢、判斷 `inputKind`、建立多語 `QueryLanguageProfile`。
-- `EntityLinkingService`：優先連 `matchedProblem`、`codeFeatures`、`graphSeeds`，再補概念 alias 比對。
-- `VectorSearchService`：使用 `queryVariants["vector"]` 做 embedding。
-- `BM25SearchService`：使用 `queryVariants["bm25"]`，本地與 store 模式都只保留 `score > 0` 的候選。
-- `GraphSearchService`：即使沒有 exact matched problem，也能直接使用 `graphSeeds` 找圖路徑。
-- `HybridFusionService`、`Reranker`、`EvidenceBuilder`、`ContextBuilder`、`LLMResponseGenerator`：保持既有責任。
+- `QueryUnderstandingService`：判斷 `inputKind`，並建立 `QueryLanguageProfile`。
+- `EntityLinkingService`：整合 `matchedProblem`、`codeFeatures`、`graphSeeds` 與 alias 規則。
+- `VectorSearchService`：使用 `queryVariants["vector"]` 做 embedding 查詢。
+- `BM25SearchService`：使用 `queryVariants["bm25"]`；本地與 store 模式都只保留 `score > 0` 的候選。
+- `GraphSearchService`：沿用 `graphSeeds` 與 exact matched problem 的 graph expansion 規則。
+- `HybridFusionService`、`Reranker`、`EvidenceBuilder`、`ContextBuilder`、`LLMResponseGenerator`：負責融合、重排、證據整理與最終輸出。
+
+### ContextBuilder guardrail
+
+- `ContextBuilder` 只能消費 evidence lane 與 display/context lane 的欄位，例如 `answerHint`、`solutionHints`、`difficulty`、`constraints`、`graphPaths` 與其他乾淨顯示文字。
+- `ContextBuilder` 不得直接讀取任何 chunk `searchText`。
+- `searchText` 中的 alias expansion、query expansion noise、索引輔助詞，都不應出現在 `contextPreview` 或最終顯示內容。
 
 ### 多語查詢理解規則
 
-`backend/app/query_language.py` 現在是查詢理解的核心，主要規則如下：
+`backend/app/query_language.py` 是雙語檢索與 query expansion 的權威來源：
 
-- 語言偵測：輸入會標記成 `zh-Hant`、`en`、`mixed`。
-- 詞組抽取：先抓中文詞組，再做 ASCII tokenization。
-- 雙語 alias：例如 `無權圖 -> unweighted graph`、`廣搜 -> BFS`、`圖遍歷 -> Graph Traversal`。
-- 概念推導：
-  - `無權圖 + 最短步數 / 最短路徑 -> BFS + Shortest Path`
-  - `BFS -> Queue + Visited Array`
-  - `網格 / matrix + shortest path -> Graph Traversal + BFS`
-  - `起點 + 終點 + 最短步數 -> Shortest Path + BFS`
-- 查詢變體：
-  - `bm25`：原始查詢加英文擴展詞
-  - `vector`：英文語意化改寫，沒有則退回擴展詞
-  - `graphSeeds`：`concept:*` / `pattern:*` ID
+- 語言分類會標示 `zh-Hant`、`en`、`mixed`。
+- `keywords` 會保留中文詞組，不只做 ASCII tokenization。
+- 常見 alias 例如 `無權圖 -> unweighted graph`、`廣搜 -> BFS`、`圖遍歷 -> Graph Traversal`。
+- `queryVariants` 包含：
+  - `bm25`：原始查詢加英文 alias 與擴展詞。
+  - `vector`：語意較平滑的查詢變體。
+  - `graphSeeds`：`concept:*` / `pattern:*` entity IDs。
 
 ### Graph Path 形狀
 
-圖譜路徑刻意保留兩個層次：
+graph path 需要同時保留穩定 public shape 與底層 store path：
 
-- `nodes` / `relations`：穩定的對外顯示形狀，通常是 `problem -> source -> target`。
-- `storePath.nodes` / `storePath.relations`：保留 Neo4j 原始回傳內容，方便 debug。
-
-每條 graph path 也會帶：
-
-- `graphPathOperation`：`candidate_retrieval` 或 `exact_expansion`
-- `pathScoring.strategy`：固定為 `weighted_layered_path_v1`
-- `scoreMeta`：標示這是 graph path 分數，不可直接跟 BM25 / vector / reranker 分數混比
+- `nodes` / `relations`：穩定的 public shape，預設為 `problem -> source -> target`。
+- `storePath.nodes` / `storePath.relations`：保留 Neo4j 原始路徑，方便 debug。
+- `graphPathOperation`：`candidate_retrieval` 或 `exact_expansion`。
+- `pathScoring.strategy`：目前固定 `weighted_layered_path_v1`。
+- `scoreMeta`：明確標記 graph path 分數不可直接與 BM25 / vector / reranker 分數混比。
 
 ## Runtime Backend Selection
 
-FastAPI 啟動時讀取 `RETRIEVAL_BACKEND`：
+FastAPI 會根據 `RETRIEVAL_BACKEND` 選擇 backend：
 
-- `local`：建立預設 `OnlineQueryPipeline()`，走本機 fallback documents。
-- `stores`：建立 `QdrantVectorStore`、`Neo4jGraphStore`、`JsonBM25Store`，並透過 `ProcessedProblemDocumentLoader` 從 `PROCESSED_PROBLEMS_PATH` 載入 runtime documents。
+- `local`：使用 `OnlineQueryPipeline()` 與 fallback documents。
+- `stores`：使用 `QdrantVectorStore`、`Neo4jGraphStore`、`JsonBM25Store`，並透過 `ProcessedProblemDocumentLoader` 從 `PROCESSED_PROBLEMS_PATH` 載入 runtime documents。
 
-在 `stores` 模式下：
+`stores` 模式的主要設定：
 
 - `BM25_INDEX_PATH` 預設為 `data/processed/bm25_index.json`
 - `PROCESSED_PROBLEMS_PATH` 預設為 `data/processed/problems.json`
-- `retrievalTrace.candidateSources` 會在 debug mode 顯示每一條邏輯檢索路徑對應到哪個實體 backend
+- `retrievalTrace.candidateSources` 會在 debug mode 中標示每個候選實際來自哪個 backend
 
 ```json
 {
@@ -118,7 +129,7 @@ FastAPI 啟動時讀取 `RETRIEVAL_BACKEND`：
 }
 ```
 
-## Provider 與 Adapter 邊界
+## Provider 與 Adapter 分層
 
 Provider 介面：
 
@@ -147,15 +158,15 @@ Neo4jGraphStore
 
 測試預設使用 deterministic mock provider 與 in-memory adapters。正式 demo 可透過 Docker 啟動 Qdrant 與 Neo4j，再把 store adapter 切到真實服務。
 
-## 前端追蹤面板
+## 前端與回應整合
 
-前端畫面對齊線上查詢流程：
+前端主要依賴這些 retrieval 輸出：
 
 ```text
-輸入 -> 查詢理解 -> 三路檢索 -> fusion/rerank -> evidence/context -> 回答
+查詢理解 -> 檢索候選 -> 融合與重排 -> evidence/context -> 分析回應
 ```
 
-`frontend/src/App.tsx` 目前會顯示：
+`frontend/src/App.tsx` 會使用：
 
 - `queryLanguage`
 - `exactTerms`
@@ -166,4 +177,4 @@ Neo4jGraphStore
 - `queryVariants.vector`
 - `queryVariants.graphSeeds`
 
-`frontend/src/api.ts` 會正規化這些欄位，並在後端不可用時丟出明確錯誤，不會偽造一個看起來成功的 API 回應。
+`frontend/src/api.ts` 會處理分析回應欄位，並把可顯示的乾淨 evidence 呈現給使用者；索引用 `searchText` 不應直接穿透到 UI。
