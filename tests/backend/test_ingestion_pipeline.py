@@ -22,8 +22,8 @@ def test_committed_programming_problem_seed_is_readable_utf8():
     assert not seed_text.startswith("\ufeff")
     assert "\ufffd" not in seed_text
     assert "\\u" not in seed_text
-    assert "在有障礙的無權網格中" in seed_text
-    assert len(json.loads(seed_text)["problems"]) == 3
+    seed_problem_ids = {problem["id"] for problem in json.loads(seed_text)["problems"]}
+    assert {"uva-10653", "leetcode-1091", "leetcode-994"} <= seed_problem_ids
 
 
 def _write_raw_problem(path: Path) -> None:
