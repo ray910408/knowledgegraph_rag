@@ -50,16 +50,18 @@ function inputKindLabel(kind: InputKind): string {
 }
 
 function conceptKindLabel(kind: RequiredConcept["kind"]): string {
-  if (kind === "algorithm") {
-    return "演算法";
+  switch (kind) {
+    case "algorithm":
+      return "演算法";
+    case "data_structure":
+      return "資料結構";
+    case "pattern":
+      return "題型模式";
+    case "technique":
+      return "技巧";
+    default:
+      return "概念";
   }
-  if (kind === "data_structure") {
-    return "資料結構";
-  }
-  if (kind === "pattern") {
-    return "題型模式";
-  }
-  return "概念";
 }
 
 function formatScore(value: unknown): string {

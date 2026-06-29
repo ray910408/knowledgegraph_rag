@@ -22,7 +22,18 @@ JsonMap = dict[str, Any]
 RetrievalMode = Literal["hybrid", "vector", "graph"]
 _MAX_STORE_FETCH_ATTEMPTS = 4
 _MAX_STORE_FETCH_WINDOW = 100
+_FALLBACK_COMMON_MISTAKES = (
+    "忘記標記 visited。",
+    "queue 初始化錯誤，導致起點或距離沒有被正確設定。",
+)
 _GRAPH_PATH_SCORING_STRATEGY = "weighted_layered_path_v1"
+_GRAPH_PATH_CONCEPT_PRIORITY = {
+    "shortest path": 0,
+    "bfs": 1,
+    "queue": 2,
+    "graph traversal": 3,
+    "visited array": 4,
+}
 _ALLOWED_GRAPH_NODE_LAYERS = frozenset(
     {"problem", "chunk", "concept", "code_feature", "pattern", "source"}
 )
@@ -31,6 +42,8 @@ _ALLOWED_GRAPH_RELATION_TYPES = frozenset(
         "HAS_SECTION",
         "DERIVED_FROM_SOURCE",
         "MENTIONS_CONCEPT",
+        "HAS_PATTERN",
+        "REQUIRES",
         "HAS_CODE_FEATURE",
         "USES_DATA_STRUCTURE",
         "IMPLEMENTS_PATTERN",
@@ -247,6 +260,7 @@ class OnlineQueryResult:
     reranked_candidates: tuple[RetrievalCandidate, ...]
     graph_paths: tuple[JsonMap, ...]
     trace: RetrievalTrace
+    raw_graph_paths: tuple[JsonMap, ...] = ()
 
 
 class QueryUnderstandingService:
@@ -807,6 +821,154 @@ def _raw_chunks_for_candidate(candidate: RetrievalCandidate) -> list[JsonMap]:
     return [deepcopy(candidate.to_mapping())]
 
 
+def _raw_chunk_payload(chunk: JsonMap) -> JsonMap:
+    payload = _mapping(chunk.get("payload"))
+    store_payload = payload.get("storePayload") or payload.get("store_payload")
+    if isinstance(store_payload, dict):
+        return dict(store_payload)
+    if payload:
+        return payload
+    return _mapping(chunk)
+
+
+def _chunk_kind(chunk: JsonMap) -> str:
+    payload = _raw_chunk_payload(chunk)
+    return str(payload.get("kind") or chunk.get("kind") or "").strip().lower()
+
+
+def _chunk_display_text(chunk: JsonMap) -> str:
+    payload = _raw_chunk_payload(chunk)
+    for key in ("displayText", "display_text", "text"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _chunk_score(chunk: JsonMap) -> float:
+    payload = _raw_chunk_payload(chunk)
+    value = chunk.get("score", payload.get("score", 0.0))
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _chunk_selection_mapping(chunk: JsonMap) -> JsonMap:
+    payload = _raw_chunk_payload(chunk)
+    return {
+        "id": str(
+            chunk.get("id")
+            or payload.get("storeCandidateId")
+            or payload.get("store_candidate_id")
+            or ""
+        ),
+        "kind": _chunk_kind(chunk),
+        "displayText": _chunk_display_text(chunk),
+        "score": _chunk_score(chunk),
+    }
+
+
+def _candidate_chunk_by_kind(
+    candidate: RetrievalCandidate,
+    kinds: set[str],
+) -> JsonMap | None:
+    eligible = [
+        chunk
+        for chunk in _raw_chunks_for_candidate(candidate)
+        if _chunk_kind(chunk) in kinds and _chunk_display_text(chunk)
+    ]
+    if not eligible:
+        return None
+    selected = sorted(
+        eligible,
+        key=lambda chunk: (-_chunk_score(chunk), str(chunk.get("id") or "")),
+    )[0]
+    return _chunk_selection_mapping(selected)
+
+
+def _candidate_problem_card(candidate: RetrievalCandidate) -> JsonMap | None:
+    return _candidate_chunk_by_kind(candidate, {"problem_card"})
+
+
+def _candidate_statement(candidate: RetrievalCandidate) -> JsonMap | None:
+    return _candidate_chunk_by_kind(candidate, {"statement"})
+
+
+def _candidate_solution(candidate: RetrievalCandidate) -> JsonMap | None:
+    return _candidate_chunk_by_kind(candidate, {"solution", "answer", "editorial"})
+
+
+def _best_matched_chunk(candidate: RetrievalCandidate) -> JsonMap | None:
+    eligible = [
+        chunk
+        for chunk in _raw_chunks_for_candidate(candidate)
+        if _chunk_kind(chunk) not in {"problem_card", "common_mistakes"}
+        and _chunk_display_text(chunk)
+    ]
+    if not eligible:
+        return None
+    selected = sorted(
+        eligible,
+        key=lambda chunk: (-_chunk_score(chunk), str(chunk.get("id") or "")),
+    )[0]
+    return _chunk_selection_mapping(selected)
+
+
+def _append_common_mistakes(
+    mistakes: list[str],
+    value: Any,
+    *,
+    split_lines: bool = False,
+) -> None:
+    values = str(value).splitlines() if split_lines and isinstance(value, str) else _tuple_of_str(value)
+    for item in values:
+        mistake = str(item).strip()
+        if split_lines:
+            mistake = mistake.lstrip("-").strip()
+        if mistake:
+            _append_unique(mistakes, mistake)
+
+
+def _append_common_mistakes_from_payload(mistakes: list[str], payload: JsonMap) -> None:
+    _append_common_mistakes(
+        mistakes,
+        payload.get("commonMistakes") or payload.get("common_mistakes"),
+    )
+    metadata = _mapping(payload.get("metadata"))
+    _append_common_mistakes(
+        mistakes,
+        metadata.get("commonMistakes") or metadata.get("common_mistakes"),
+    )
+
+
+def _common_mistakes_from_candidate(candidate: RetrievalCandidate) -> list[str]:
+    mistakes: list[str] = []
+    candidate_payload = _mapping(candidate.payload)
+    _append_common_mistakes_from_payload(mistakes, candidate_payload)
+    store_payload = candidate_payload.get("storePayload") or candidate_payload.get("store_payload")
+    if isinstance(store_payload, dict):
+        _append_common_mistakes_from_payload(mistakes, store_payload)
+
+    for chunk in _raw_chunks_for_candidate(candidate):
+        chunk_payload = _raw_chunk_payload(chunk)
+        _append_common_mistakes_from_payload(mistakes, chunk_payload)
+        if _chunk_kind(chunk) == "common_mistakes":
+            _append_common_mistakes(
+                mistakes,
+                _chunk_display_text(chunk),
+                split_lines=True,
+            )
+    return mistakes
+
+
+def _fallback_common_mistakes() -> list[str]:
+    return list(_FALLBACK_COMMON_MISTAKES)
+
+
 def _score_meta(stage: str) -> JsonMap:
     labels = {
         "vector": "Vector similarity",
@@ -1004,6 +1166,23 @@ class EvidenceBuilder:
             if candidate.problem_type:
                 _append_unique(patterns, candidate.problem_type)
 
+        common_mistakes: list[str] = []
+        for candidate in evidence_candidates:
+            for mistake in _common_mistakes_from_candidate(candidate):
+                _append_unique(common_mistakes, mistake)
+        if not common_mistakes:
+            common_mistakes = _fallback_common_mistakes()
+
+        matched_problem_mapping = matched_problem.to_mapping() if matched_problem else None
+        if matched_problem_mapping is not None:
+            matched_problem_mapping.update(
+                {
+                    "problemCard": _candidate_problem_card(matched_problem.candidate),
+                    "statement": _candidate_statement(matched_problem.candidate),
+                    "solution": _candidate_solution(matched_problem.candidate),
+                }
+            )
+
         return RetrievalEvidenceBundle(
             similar_problems=[
                 {
@@ -1017,6 +1196,8 @@ class EvidenceBuilder:
                     "constraints": list(_tuple_of_str(candidate.payload.get("constraints"))),
                     "source": str(candidate.payload.get("documentSource") or ""),
                     "sourceId": str(candidate.payload.get("sourceId") or ""),
+                    "problemCard": _candidate_problem_card(candidate),
+                    "matchedChunk": _best_matched_chunk(candidate),
                 }
                 for candidate in similar_candidates
             ],
@@ -1025,11 +1206,8 @@ class EvidenceBuilder:
             data_structure_evidence=data_structures,
             pattern_evidence=patterns,
             technique_evidence=techniques,
-            matched_problem=matched_problem.to_mapping() if matched_problem else None,
-            common_mistakes=[
-                "忘記標記 visited。",
-                "queue 初始化錯誤，導致起點或距離沒有被正確設定。",
-            ],
+            matched_problem=matched_problem_mapping,
+            common_mistakes=common_mistakes,
         )
 
 
@@ -1062,6 +1240,14 @@ class ContextBuilder:
                 lines.append(f"  答案摘要: {matched_problem['answerHint']}")
             for hint in matched_problem.get("solutionHints", []):
                 lines.append(f"  解題提示: {hint}")
+            for key, label in (
+                ("problemCard", "problemCard"),
+                ("statement", "statement"),
+                ("solution", "solution"),
+            ):
+                selected = matched_problem.get(key)
+                if isinstance(selected, dict) and selected.get("displayText"):
+                    lines.append(f"  {label}: {selected['displayText']}")
         else:
             lines.append("- 無")
         if evidence["similarProblems"]:
@@ -1079,6 +1265,12 @@ class ContextBuilder:
                     lines.append(f"  難度: {problem['difficulty']}")
                 if problem.get("constraints"):
                     lines.append(f"  限制: {', '.join(problem['constraints'])}")
+                problem_card = problem.get("problemCard")
+                if isinstance(problem_card, dict) and problem_card.get("displayText"):
+                    lines.append(f"  problemCard: {problem_card['displayText']}")
+                matched_chunk = problem.get("matchedChunk")
+                if isinstance(matched_chunk, dict) and matched_chunk.get("displayText"):
+                    lines.append(f"  matchedChunk: {matched_chunk['displayText']}")
         lines.extend(["", "圖路徑"])
         for path in evidence["graphPaths"]:
             nodes = [_graph_path_node_label(node) for node in path.get("nodes", [])]
@@ -1181,6 +1373,18 @@ class OnlineQueryPipeline:
             top_k=top_k,
             query_understanding=understanding,
         )
+        target_problem_ids = (
+            (
+                matched_problem.problem_id,
+                matched_problem.source_id,
+            )
+            if matched_problem is not None
+            else ()
+        ) + tuple(candidate.id for candidate in reranked)
+        pruned_graph_paths = _prune_graph_paths(
+            graph_result.paths,
+            target_problem_ids,
+        )
         trace = RetrievalTrace(
             query_understanding=understanding.to_mapping(),
             entity_linking=[dict(entity) for entity in linked_entities],
@@ -1215,8 +1419,9 @@ class OnlineQueryPipeline:
             bm25_candidates=bm25_candidates,
             fused_candidates=fused,
             reranked_candidates=reranked,
-            graph_paths=graph_result.paths,
+            graph_paths=pruned_graph_paths,
             trace=trace,
+            raw_graph_paths=graph_result.paths,
         )
 
 
@@ -1286,6 +1491,12 @@ def _exact_document_chunks(document: RetrievalDocument) -> list[JsonMap]:
             }
         )
 
+    problem_card = " - ".join(
+        part
+        for part in (document.source, document.source_id, document.title)
+        if part
+    )
+    append_chunk("problem_card", f"{document.id}:problem_card:0", problem_card)
     append_chunk("statement", f"{document.id}:statement:0", document.text)
     append_chunk("answer", f"{document.id}:answer:0", document.answer)
     for index, hint in enumerate(document.solution_hints, start=1):
@@ -1598,14 +1809,19 @@ def _canonical_graph_path(
         if operation == "exact_expansion"
         else "DERIVED_FROM_SOURCE"
     )
+    target_relation_type = _canonical_target_relation_type(
+        target,
+        target_label,
+        raw_relation,
+    )
+    target_relation = _graph_edge(source_node, target, target_relation_type, edge_weight)
+    raw_relation_type = str(raw_relation or "").upper()
+    if raw_relation_type and raw_relation_type not in _ALLOWED_GRAPH_RELATION_TYPES:
+        target_relation["normalizedFrom"] = raw_relation_type
+
     relations = [
         _graph_edge(problem_node, source_node, source_relation_type, 1.0),
-        _graph_edge(
-            source_node,
-            target,
-            _canonical_target_relation_type(target, target_label, raw_relation),
-            edge_weight,
-        ),
+        target_relation,
     ]
     nodes = [problem_node, source_node, target]
     scoring = _score_graph_path(
@@ -1635,15 +1851,19 @@ def _graph_node(node_id: str, *, label: str, layer: str) -> JsonMap:
 
 
 def _graph_edge(source: JsonMap, target: JsonMap, edge_type: str, weight: Any) -> JsonMap:
+    raw_type = str(edge_type or "").upper()
     canonical_type = (
-        edge_type if edge_type in _ALLOWED_GRAPH_RELATION_TYPES else "SIMILAR_BY_FEATURE"
+        raw_type if raw_type in _ALLOWED_GRAPH_RELATION_TYPES else "SIMILAR_BY_FEATURE"
     )
-    return {
+    edge = {
         "source": str(source["id"]),
         "target": str(target["id"]),
         "type": canonical_type,
         "weight": _clamp_graph_weight(weight),
     }
+    if raw_type and canonical_type != raw_type:
+        edge["normalizedFrom"] = raw_type
+    return edge
 
 
 def _score_graph_path(
@@ -1750,6 +1970,154 @@ def _graph_path_target_id(path: JsonMap) -> str:
     if isinstance(target, dict):
         return str(target.get("id") or "")
     return str(target)
+
+
+def _graph_path_problem_id(path: JsonMap) -> str:
+    nodes = path.get("nodes")
+    if not isinstance(nodes, list):
+        return ""
+    string_fallback = ""
+    for node in nodes:
+        if isinstance(node, dict):
+            node_type = str(node.get("type") or node.get("layer") or "").lower()
+            node_id = str(node.get("id") or "")
+            if node_type == "problem" and node_id:
+                return node_id
+        else:
+            node_id = str(node)
+            if not string_fallback and _looks_like_problem_id(node_id):
+                string_fallback = node_id
+    return string_fallback
+
+
+def _graph_path_target_concept_id(path: JsonMap) -> str:
+    nodes = path.get("nodes")
+    if not isinstance(nodes, list):
+        return ""
+    string_fallback = ""
+    semantic_layers = {
+        "concept",
+        "algorithm",
+        "data_structure",
+        "technique",
+        "pattern",
+        "code_feature",
+    }
+    for node in reversed(nodes):
+        if isinstance(node, dict):
+            node_type = str(node.get("type") or node.get("layer") or "").lower()
+            if node_type in semantic_layers:
+                return str(node.get("id") or node.get("label") or "")
+        else:
+            node_id = str(node)
+            if not _looks_like_problem_id(node_id):
+                string_fallback = node_id
+                break
+    return string_fallback
+
+
+def _graph_path_priority(path: JsonMap) -> tuple[int, int, float, int, str]:
+    nodes = path.get("nodes")
+    relations = path.get("relations")
+    if isinstance(relations, list):
+        hop_count = len(relations)
+    elif isinstance(nodes, list):
+        hop_count = max(len(nodes) - 1, 0)
+    else:
+        hop_count = 0
+
+    target_label = _graph_path_target_label(path)
+    target_id = _graph_path_target_concept_id(path)
+    concept_rank = _GRAPH_PATH_CONCEPT_PRIORITY.get(
+        _normalize_graph_path_concept_key(target_label),
+        _GRAPH_PATH_CONCEPT_PRIORITY.get(
+            _normalize_graph_path_concept_key(target_id),
+            len(_GRAPH_PATH_CONCEPT_PRIORITY),
+        ),
+    )
+    score = _clamp_graph_weight(path.get("score", _mapping(path.get("pathScoring")).get("score", 0.0)))
+    source_rank = 0 if str(path.get("pathSource") or "").lower() == "neo4j" else 1
+    target_key = _normalize_graph_path_concept_key(target_label or target_id)
+    return (hop_count, concept_rank, -score, source_rank, target_key)
+
+
+def _prune_graph_paths(
+    paths: Sequence[JsonMap],
+    target_problem_ids: Sequence[str],
+    max_paths_per_problem: int = 2,
+) -> tuple[JsonMap, ...]:
+    if max_paths_per_problem <= 0:
+        return ()
+
+    ordered_problem_ids: list[str] = []
+    seen_problem_ids: set[str] = set()
+    for problem_id in target_problem_ids:
+        problem_key = str(problem_id)
+        if problem_key and problem_key not in seen_problem_ids:
+            seen_problem_ids.add(problem_key)
+            ordered_problem_ids.append(problem_key)
+
+    paths_by_problem: dict[str, dict[str, JsonMap]] = {
+        problem_id: {} for problem_id in ordered_problem_ids
+    }
+    for path in paths:
+        problem_id = _graph_path_problem_id(path)
+        if problem_id not in paths_by_problem:
+            continue
+        target_concept_id = _graph_path_target_concept_id(path)
+        if not target_concept_id:
+            continue
+        best_by_concept = paths_by_problem[problem_id]
+        existing = best_by_concept.get(target_concept_id)
+        if existing is None or _graph_path_priority(path) < _graph_path_priority(existing):
+            best_by_concept[target_concept_id] = path
+
+    pruned: list[JsonMap] = []
+    for problem_id in ordered_problem_ids:
+        problem_paths = sorted(
+            paths_by_problem[problem_id].values(),
+            key=_graph_path_priority,
+        )
+        pruned.extend(dict(path) for path in problem_paths[:max_paths_per_problem])
+    return tuple(pruned)
+
+
+def _graph_path_target_label(path: JsonMap) -> str:
+    nodes = path.get("nodes")
+    if not isinstance(nodes, list):
+        return ""
+    semantic_layers = {
+        "concept",
+        "algorithm",
+        "data_structure",
+        "technique",
+        "pattern",
+        "code_feature",
+    }
+    for node in reversed(nodes):
+        if isinstance(node, dict):
+            node_type = str(node.get("type") or node.get("layer") or "").lower()
+            if node_type in semantic_layers:
+                return str(node.get("label") or node.get("id") or "")
+        else:
+            node_id = str(node)
+            if not _looks_like_problem_id(node_id):
+                return node_id
+    return ""
+
+
+def _normalize_graph_path_concept_key(value: str) -> str:
+    normalized = str(value or "").lower()
+    normalized = normalized.removeprefix("concept:")
+    normalized = normalized.removeprefix("pattern:")
+    normalized = normalized.removeprefix("code_feature:")
+    normalized = normalized.replace("-", " ").replace("_", " ")
+    return " ".join(normalized.split())
+
+
+def _looks_like_problem_id(value: str) -> bool:
+    lowered = str(value).lower()
+    return lowered.startswith(("leetcode-", "uva-"))
 
 
 def _graph_path_node_label(node: Any) -> str:

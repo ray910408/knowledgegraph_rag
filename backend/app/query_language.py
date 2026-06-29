@@ -58,7 +58,7 @@ ALIAS_RULES: tuple[AliasRule, ...] = (
     AliasRule(
         canonical_name="Visited Array",
         entity_id="concept:visited-array",
-        entity_type="data_structure",
+        entity_type="technique",
         zh_terms=("拜訪陣列", "visited 陣列"),
         en_terms=("Visited Array", "visited array", "visited set"),
     ),
@@ -117,6 +117,7 @@ GRAPH_SEED_ENTITY_REGISTRY = {
         "entityId": rule.entity_id,
         "name": rule.canonical_name,
         "type": rule.entity_type,
+        "entityType": rule.entity_type,
     }
     for rule in ALIAS_RULES
     if rule.entity_id
@@ -128,7 +129,8 @@ def build_query_language_profile(text: str) -> QueryLanguageProfile:
     exact_terms = extract_exact_terms(normalized)
     concept_seeds = infer_concept_seeds(normalized, exact_terms)
     expanded_terms = expand_terms(exact_terms, concept_seeds)
-    graph_seeds = _graph_seed_entity_ids(concept_seeds)
+    graph_seed_names = _dedupe((*concept_seeds, *_matched_canonical_names(normalized, exact_terms)))
+    graph_seeds = _graph_seed_entity_ids(graph_seed_names)
     return QueryLanguageProfile(
         query_language=detect_query_language(normalized),
         keywords=shared_multilingual_tokens(normalized),

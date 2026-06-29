@@ -229,6 +229,10 @@ matchedProblem
 }
 ```
 
+### `retrievalTrace.rawGraphPaths`
+
+`retrievalTrace.rawGraphPaths` 只在 `debug=true` 時輸出，是 graph search 尚未被 reranking 與 evidence selection 裁切前的原始路徑集合。一般回應 contract 不應依賴此欄位；UI 與 prompt context 應使用 `evidenceBundle.graphPaths`。
+
 ## `evidenceBundle`
 
 `evidenceBundle` 包含：
@@ -251,6 +255,12 @@ matchedProblem
 - `techniqueEvidence`：放 `Visited Array` 這種不是演算法名稱但很重要的技巧證據。
 - `matchedProblem`：exact problem 命中時，可在 evidence layer 再顯示一次同一筆 canonical record。
 
+### `evidenceBundle.graphPaths` 與 selected evidence
+
+`evidenceBundle.graphPaths` 是 post-rerank pruned graph paths，只保留回應採用的 graph evidence；完整原始路徑僅能從 debug-only `retrievalTrace.rawGraphPaths` 觀察。
+
+matched evidence 會使用 `problemCard`、statement、solution 與 hints 組成人類可讀摘要；similar evidence 會使用 `problemCard` 加上 `matchedChunk` 說明命中的 chunk。
+
 ## Debug mode
 
 啟用方式：
@@ -267,6 +277,8 @@ POST /api/analysis?debug=true
 - `compatibilityWarnings`
 
 `contextPreview` 會使用 enriched payload、display/context lane 與 graph path rationale 組成 LLM prompt context，不會直接把 `searchText` alias expansion 回傳給前端。非 debug response 不會回傳它。
+
+`ContextBuilder` 必須從 `displayText` / display lane 與 evidence lane 建立 prompt context，不得讀取 chunk `searchText`。`contextPreview` 因此只能顯示乾淨文字、selected evidence 與已 pruned graph paths。
 
 ## Recommendations
 

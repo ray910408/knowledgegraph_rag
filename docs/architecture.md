@@ -108,6 +108,14 @@ graph path 需要同時保留穩定 public shape 與底層 store path：
 - `pathScoring.strategy`：目前固定 `weighted_layered_path_v1`。
 - `scoreMeta`：明確標記 graph path 分數不可直接與 BM25 / vector / reranker 分數混比。
 
+### Graph path runtime contract
+
+`GraphSearchResult.paths` 是 graph store 或 in-memory graph search 回傳的 raw path 集合。pipeline 會在 reranking 與 evidence selection 後裁切成 `OnlineQueryResult.graph_paths`，也就是 API 看到的 pruned graph paths 與 `evidenceBundle.graphPaths`。
+
+debug 模式可以在 `retrievalTrace.rawGraphPaths` 檢查尚未裁切的 raw paths；一般 UI、`contextPreview` 與 LLM prompt context 不應讀取 raw paths。candidate 的 `rawChunks` 與 `storePayload` 只供 provenance/debug 使用，不能取代 selected evidence。
+
+`ContextBuilder` 只消費 display/context lane 與 selected evidence。matched evidence 由 `problemCard`、statement、solution、hints 組成；similar evidence 由 `problemCard` 與 `matchedChunk` 組成。`ContextBuilder` 不得讀取 `searchText`，也不得把 alias expansion 或 template-derived `common mistakes` 寫入 prompt context。
+
 ## Runtime Backend Selection
 
 FastAPI 會根據 `RETRIEVAL_BACKEND` 選擇 backend：

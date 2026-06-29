@@ -46,12 +46,17 @@ class InMemoryBM25Store:
 
     def search(self, query: str, *, top_k: int) -> tuple[SearchCandidate, ...]:
         query_terms = set(_tokens(query))
+        if not query_terms:
+            return ()
+
         candidates: list[SearchCandidate] = []
         for document in self._documents.values():
             terms = _tokens(document.text)
             overlap = query_terms & set(terms)
-            score = 0.0 if not query_terms else len(overlap) / len(query_terms)
+            score = len(overlap) / len(query_terms)
             score += sum(1 for term in terms if term in query_terms) / max(len(terms), 1)
+            if score <= 0:
+                continue
             candidates.append(
                 SearchCandidate(id=document.id, score=round(score, 6), payload=dict(document.payload))
             )

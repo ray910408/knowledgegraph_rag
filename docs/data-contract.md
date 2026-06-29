@@ -113,6 +113,10 @@ common_mistakes
 - `text == displayText`，避免既有依賴在 rollout 期間破壞。
 - template-derived `commonMistakes` 不得進入 `searchText`。若 `commonMistakesSource == "template"`，該段不得被納入索引文字。
 
+### Display / search lane contract
+
+`displayText` 是 display/context lane，供 UI、evidence、`contextPreview` 與 prompt context 使用。`searchText` 是 index-only lane，只供 BM25 與 vector embedding 使用；`ContextBuilder` 不得讀取 chunk `searchText`，也不得把 alias expansion 或 template-derived `commonMistakes` 外洩到顯示內容。
+
 ### `entities.json`
 
 欄位：
@@ -132,6 +136,7 @@ metadata
 problem
 algorithm
 data_structure
+technique
 pattern
 concept
 ```
@@ -142,6 +147,8 @@ concept
 - `Queue`：`佇列`、`隊列`
 - `Visited Array`：`拜訪陣列`、`visited 陣列`、`visited set`
 - `Graph Traversal`：`圖論遍歷`、`圖遍歷`
+
+`Visited Array`、`拜訪陣列` 與 `visited 陣列` 都屬於 `technique` taxonomy，不應正規化成 `data_structure`。
 
 ### `relations.json`
 
@@ -163,6 +170,8 @@ metadata
 REQUIRES
 HAS_PATTERN
 ```
+
+`REQUIRES` 與 `HAS_PATTERN` 是 ingestion、store adapter 與 runtime graph path 都必須接受並保留的 relation type。若遇到未知 relation，normalized relation 必須保留 `normalizedFrom`，讓 debug trace 可回溯原始 type。
 
 ### `bm25_index.json`
 
@@ -204,6 +213,8 @@ concepts
 ```
 
 對外正規化後，候選 `payload.source` 會映射成 `documentSource`，原始 store 內容則保留在 `storePayload`。
+
+BM25 candidate stores 只回傳 `score > 0` 的候選；`score <= 0` 的文件不得進入 fusion。
 
 ### `qdrant_vectors.json`
 
@@ -456,6 +467,8 @@ matchedProblem
 
 - `similarProblems` 只來自最終 selected-mode candidates。
 - `graphPaths` 可帶 `nodes`、`relations`、`score`、`rationale`、`storePath`、`pathSource`、`graphPathOperation`、`pathScoring`、`scoreMeta`。
+- `evidenceBundle.graphPaths` 是 post-rerank pruned graph paths，只保留 selected evidence 使用的路徑；未裁切的原始路徑只會出現在 debug-only `retrievalTrace.rawGraphPaths`。
+- matched evidence 必須使用 `problemCard`、statement、solution 與 hints；similar evidence 必須使用 `problemCard` 與 `matchedChunk`，讓使用者看見被比對的題目摘要與實際命中片段。
 - `techniqueEvidence` 會放 `Visited Array` 這類技巧證據。
 
 ## `contextPreview` 契約

@@ -238,6 +238,38 @@ def test_json_bm25_store_loads_processed_index(tmp_path):
     assert results[0].payload["metadata"]["title"] == "Rotting Oranges"
 
 
+def test_json_bm25_store_filters_zero_score_candidates(tmp_path):
+    from backend.app.retrieval.runtime import JsonBM25Store
+
+    index_path = tmp_path / "bm25_index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {
+                        "id": "leetcode-994:statement:0",
+                        "text": "BFS queue shortest path",
+                        "problemId": "leetcode-994",
+                    },
+                    {
+                        "id": "leetcode-300:statement:0",
+                        "text": "dynamic programming subsequence",
+                        "problemId": "leetcode-300",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = JsonBM25Store.from_path(index_path)
+
+    results = store.search("BFS", top_k=2)
+
+    assert [result.id for result in results] == ["leetcode-994:statement:0"]
+    assert all(result.score > 0 for result in results)
+
+
 def test_json_bm25_store_matches_problem_alias_text(tmp_path):
     from backend.app.retrieval.runtime import JsonBM25Store
 

@@ -36,6 +36,13 @@
 - ingestion 產出的 `bm25_index.json` 與 `qdrant_vectors.json` 都用 bilingual `searchText`，不是只靠原始 chunk 文字。
 - `contextPreview` 與 `ContextBuilder` 不得洩漏 `searchText` alias expansion 或 template-derived `commonMistakes`。
 
+## 檢索契約檢查
+
+- `BM25` store 只能回傳 `score > 0` 的候選；零分或 `score <= 0` 的文件代表 zero-score `BM25` miss，不得進入 `fusion` 或 `reranking`。
+- `fusion` 與 `reranking` 檢查應確認 selected candidates 來自正向 lexical、vector 或 graph evidence，而不是用來補位的 `BM25` 結果。
+- Prompt-context leak 檢查必須驗證 `ContextBuilder` 與 `contextPreview` 不包含 chunk `searchText`、alias expansion 噪音或 template-derived `commonMistakes`。
+- Graph evidence 檢查應比較 debug-only raw paths 與 pruned response paths：`retrievalTrace.rawGraphPaths` 可以較大，但 `evidenceBundle.graphPaths` 必須只包含 selected post-rerank evidence。
+
 ## 驗證指令
 
 ```powershell
