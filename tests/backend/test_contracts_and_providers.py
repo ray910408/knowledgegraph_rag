@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+from backend.app.chunking import is_non_empty_chunk_text
 from backend.app.contracts import (
     EntityRecord,
     ProblemChunk,
@@ -81,6 +82,52 @@ def test_ingestion_artifact_records_are_serializable():
     assert chunk.to_mapping()["problemId"] == "leetcode-994"
     assert entity.to_mapping()["aliases"] == ["Breadth First Search"]
     assert relation.to_mapping()["sourceId"] == "leetcode-994"
+
+
+def test_problem_chunk_mapping_exposes_additive_chunk_contract_fields():
+    chunk = ProblemChunk(
+        id="legacy-id",
+        problem_id="leetcode-994",
+        kind="statement",
+        text="Legacy text",
+        index=0,
+        chunk_id="chunk-42",
+        input_id="input-7",
+        display_text="Display text",
+        search_text="search tokens",
+    )
+
+    payload = chunk.to_mapping()
+
+    assert payload["chunkId"] == "chunk-42"
+    assert payload["inputId"] == "input-7"
+    assert payload["text"] == "Display text"
+    assert payload["displayText"] == "Display text"
+    assert payload["searchText"] == "search tokens"
+
+
+def test_problem_chunk_mapping_preserves_legacy_text_alias_when_display_text_missing():
+    chunk = ProblemChunk(
+        id="legacy-id",
+        problem_id="leetcode-994",
+        kind="statement",
+        text="Legacy text",
+        index=0,
+    )
+
+    payload = chunk.to_mapping()
+
+    assert payload["chunkId"] == "legacy-id"
+    assert payload["inputId"] == ""
+    assert payload["text"] == "Legacy text"
+    assert payload["displayText"] == "Legacy text"
+    assert payload["searchText"] == ""
+
+
+def test_is_non_empty_chunk_text_rejects_blank_values():
+    assert is_non_empty_chunk_text("") is False
+    assert is_non_empty_chunk_text("   \n\t  ") is False
+    assert is_non_empty_chunk_text(" BFS ") is True
 
 
 def test_retrieval_trace_and_evidence_bundle_have_expected_debug_shape():

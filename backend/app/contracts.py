@@ -93,6 +93,10 @@ class ProblemChunk:
     kind: str
     text: str
     index: int
+    chunk_id: str = ""
+    input_id: str = ""
+    display_text: str = ""
+    search_text: str = ""
     concepts: tuple[str, ...] = ()
     metadata: JsonMap = field(default_factory=dict)
     answer: str = ""
@@ -107,11 +111,17 @@ class ProblemChunk:
     problem_type: str = ""
 
     def to_mapping(self) -> JsonMap:
+        # Rollout 1 keeps the legacy text alias stable while additive fields land.
+        display_text = self.display_text or self.text
         return {
             "id": self.id,
             "problemId": self.problem_id,
             "kind": self.kind,
-            "text": self.text,
+            "text": display_text,
+            "displayText": display_text,
+            "searchText": self.search_text,
+            "chunkId": self.chunk_id or self.id,
+            "inputId": self.input_id,
             "index": self.index,
             "concepts": list(self.concepts),
             "metadata": dict(self.metadata),
