@@ -53,7 +53,12 @@ class HybridRetrievalService:
         for problem in self._graph.list_problems():
             if problem.id in seen_candidate_ids or problem.id in excluded_ids:
                 continue
-            evidence_paths = self._evidence_paths(query_problem, problem, problem_id)
+            evidence_paths = self._evidence_paths(
+                query_problem,
+                problem,
+                problem_id,
+                query_concept_ids,
+            )
             concept_score = self._concept_score(query_concept_ids, problem.concept_ids)
             if evidence_paths or concept_score > 0:
                 candidate_records.append((problem, 0.0, evidence_paths))
@@ -68,7 +73,12 @@ class HybridRetrievalService:
             evidence_paths = (
                 precomputed_paths
                 if precomputed_paths is not None
-                else self._evidence_paths(query_problem, problem, problem_id)
+                else self._evidence_paths(
+                    query_problem,
+                    problem,
+                    problem_id,
+                    query_concept_ids,
+                )
             )
             graph_score = max((path.score for path in evidence_paths), default=0.0)
             total_score = (
@@ -157,6 +167,7 @@ class HybridRetrievalService:
         query_problem: Problem,
         candidate: Problem,
         persisted_problem_id: str | None,
+        query_concept_ids: set[str],
     ) -> tuple[EvidencePath, ...]:
         paths: list[EvidencePath] = []
         if persisted_problem_id:
@@ -169,7 +180,11 @@ class HybridRetrievalService:
                 )
             )
 
-        concept_paths = self._shared_concept_paths(query_problem, candidate)
+        concept_paths = self._shared_concept_paths(
+            query_problem,
+            candidate,
+            query_concept_ids,
+        )
         paths.extend(concept_paths)
         deduped = _dedupe_paths(paths)
         return tuple(sorted(deduped, key=lambda item: item.score, reverse=True))
@@ -178,11 +193,9 @@ class HybridRetrievalService:
         self,
         query_problem: Problem,
         candidate: Problem,
+        query_concept_ids: set[str],
     ) -> tuple[EvidencePath, ...]:
-        query_concepts = set(query_problem.concept_ids) | self._infer_concepts(
-            query_problem.text
-        )
-        shared = sorted(query_concepts & set(candidate.concept_ids))
+        shared = sorted(query_concept_ids & set(candidate.concept_ids))
         paths: list[EvidencePath] = []
 
         for concept_id in shared:

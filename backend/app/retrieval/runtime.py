@@ -88,9 +88,6 @@ class JsonBM25Store:
             )
         return cls(tuple(documents))
 
-    def index_documents(self, documents: Sequence[BM25Document]) -> None:
-        self._store.index_documents(documents)
-
     def search(self, query: str, *, top_k: int) -> tuple[SearchCandidate, ...]:
         return self._store.search(query, top_k=top_k)
 

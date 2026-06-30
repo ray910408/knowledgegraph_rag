@@ -873,12 +873,16 @@ def _raw_chunks_for_candidate(candidate: RetrievalCandidate) -> list[JsonMap]:
 
 def _raw_chunk_payload(chunk: JsonMap) -> JsonMap:
     payload = _mapping(chunk.get("payload"))
-    store_payload = payload.get("storePayload") or payload.get("store_payload")
-    if isinstance(store_payload, dict):
-        return dict(store_payload)
+    store_payload = _store_payload(payload)
+    if store_payload:
+        return store_payload
     if payload:
         return payload
     return _mapping(chunk)
+
+
+def _store_payload(payload: JsonMap) -> JsonMap:
+    return _mapping(payload.get("storePayload") or payload.get("store_payload"))
 
 
 def _chunk_kind(chunk: JsonMap) -> str:
@@ -999,8 +1003,8 @@ def _common_mistakes_from_candidate(candidate: RetrievalCandidate) -> list[str]:
     mistakes: list[str] = []
     candidate_payload = _mapping(candidate.payload)
     _append_common_mistakes_from_payload(mistakes, candidate_payload)
-    store_payload = candidate_payload.get("storePayload") or candidate_payload.get("store_payload")
-    if isinstance(store_payload, dict):
+    store_payload = _store_payload(candidate_payload)
+    if store_payload:
         _append_common_mistakes_from_payload(mistakes, store_payload)
 
     for chunk in _raw_chunks_for_candidate(candidate):
