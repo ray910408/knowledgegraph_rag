@@ -55,13 +55,16 @@ class BM25Store(Protocol):
 
 
 @runtime_checkable
-class GraphStore(Protocol):
+class GraphWriteStore(Protocol):
     def upsert_entities(self, entities: Sequence[EntityRecord]) -> None:
         ...
 
     def upsert_relations(self, relations: Sequence[RelationRecord]) -> None:
         ...
 
+
+@runtime_checkable
+class GraphQueryStore(Protocol):
     def find_paths(
         self,
         source_id: str,
@@ -70,3 +73,19 @@ class GraphStore(Protocol):
         max_hops: int = 3,
     ) -> tuple[JsonMap, ...]:
         ...
+
+
+@runtime_checkable
+class GraphRelatedProblemLookup(Protocol):
+    def find_related_problem_ids(
+        self,
+        entity_id: str,
+        *,
+        top_k: int = 10,
+    ) -> tuple[str, ...]:
+        ...
+
+
+@runtime_checkable
+class GraphStore(GraphWriteStore, GraphQueryStore, Protocol):
+    pass

@@ -12,7 +12,7 @@ from ..chunking.search_text import build_chunk_search_text
 from ..contracts import EntityRecord, ProblemChunk, RawProblem, RelationRecord
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
 from ..query_language import concept_search_aliases, shared_multilingual_tokens
-from ..stores import GraphStore, VectorRecord, VectorStore
+from ..stores import GraphWriteStore, VectorRecord, VectorStore
 
 
 Target = Literal["json", "bm25", "qdrant", "neo4j", "all"]
@@ -30,7 +30,7 @@ def build_ingestion_artifacts(
     allow_fallback: bool = False,
     embedding_provider: EmbeddingProvider | None = None,
     vector_store: VectorStore | None = None,
-    graph_store: GraphStore | None = None,
+    graph_store: GraphWriteStore | None = None,
 ) -> dict[str, Any]:
     if target not in {"json", "bm25", "qdrant", "neo4j", "all"}:
         raise IngestionError(f"unsupported target: {target}")

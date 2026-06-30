@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import Any, Literal, Sequence
 
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from .analysis import (
+    GRAPH_TRAVERSAL_TYPE,
     analyze_programming_input,
     build_query_id,
     detect_input_kind,
@@ -409,6 +411,167 @@ def _is_unsupported_result(result: object) -> bool:
     )
 
 
+def _has_strong_retrieval_evidence(
+    pipeline_result: object,
+    evidence_mapping: Mapping[str, Any],
+) -> bool:
+    if getattr(pipeline_result, "matched_problem", None) is not None:
+        return True
+
+    understanding = getattr(pipeline_result, "query_understanding", None)
+    concept_seeds = tuple(getattr(understanding, "concept_seeds", ()) or ())
+    if not concept_seeds:
+        return False
+    return bool(evidence_mapping.get("graphPaths") or evidence_mapping.get("similarProblems"))
+
+
+def _retrieval_problem_type(
+    pipeline_result: object,
+    evidence_mapping: Mapping[str, Any],
+) -> str:
+    matched_problem = getattr(pipeline_result, "matched_problem", None)
+    if matched_problem is not None:
+        candidate = getattr(matched_problem, "candidate", None)
+        problem_type = str(getattr(candidate, "problem_type", "") or "")
+        if problem_type:
+            return _display_problem_type(problem_type)
+        matched_mapping = matched_problem.to_mapping()
+        return _display_problem_type(str(matched_mapping.get("problemType") or ""))
+
+    for pattern in evidence_mapping.get("patternEvidence") or ():
+        pattern_name = str(pattern).strip()
+        if pattern_name:
+            return _display_problem_type(pattern_name)
+
+    for candidate in getattr(pipeline_result, "reranked_candidates", ()) or ():
+        problem_type = str(getattr(candidate, "problem_type", "") or "").strip()
+        if problem_type:
+            return _display_problem_type(problem_type)
+    return ""
+
+
+def _retrieval_required_concept_responses(
+    pipeline_result: object,
+    evidence_mapping: Mapping[str, Any],
+) -> list[RequiredConceptResponse]:
+    concept_names: list[str] = []
+    matched_problem = getattr(pipeline_result, "matched_problem", None)
+    if matched_problem is not None:
+        _append_unique_text(
+            concept_names,
+            getattr(getattr(matched_problem, "candidate", None), "concepts", ()) or (),
+        )
+
+    if not concept_names:
+        understanding = getattr(pipeline_result, "query_understanding", None)
+        _append_unique_text(concept_names, getattr(understanding, "concept_seeds", ()) or ())
+        for candidate in getattr(pipeline_result, "reranked_candidates", ()) or ():
+            _append_unique_text(concept_names, getattr(candidate, "concepts", ()) or ())
+        for key in (
+            "algorithmEvidence",
+            "dataStructureEvidence",
+            "techniqueEvidence",
+            "patternEvidence",
+        ):
+            _append_unique_text(concept_names, evidence_mapping.get(key) or ())
+
+    return [
+        RequiredConceptResponse(
+            id=_retrieval_concept_id(name),
+            name=name,
+            kind=_retrieval_concept_kind(name),
+            description=_retrieval_concept_description(name),
+        )
+        for name in concept_names
+    ]
+
+
+def _retrieval_similarity_reason(
+    pipeline_result: object,
+    required_concepts: Sequence[RequiredConceptResponse],
+) -> str:
+    concept_names = [concept.name for concept in required_concepts]
+    concept_summary = "、".join(concept_names)
+    matched_problem = getattr(pipeline_result, "matched_problem", None)
+    if matched_problem is not None:
+        source = getattr(matched_problem, "source", "")
+        source_id = getattr(matched_problem, "source_id", "")
+        title = getattr(matched_problem, "title", "")
+        if concept_summary:
+            return (
+                f"檢索直接命中 {source}-{source_id} {title}，"
+                f"並以匹配題目的概念作為依據：{concept_summary}。"
+            )
+        return f"檢索直接命中 {source}-{source_id} {title}。"
+
+    if concept_summary:
+        concept_set = set(concept_names)
+        if {"BFS", "Shortest Path"} <= concept_set or (
+            "BFS" in concept_set and "Graph Traversal" in concept_set
+        ):
+            return (
+                "檢索證據顯示這些候選都需要在無權圖中找最短步數，"
+                f"因此可以用 BFS 找最短步數；證據概念：{concept_summary}。"
+            )
+        return f"圖譜檢索找到與輸入概念相關的候選題，證據概念：{concept_summary}。"
+    return "檢索證據支援此分析結果。"
+
+
+def _retrieval_solving_hints(evidence_mapping: Mapping[str, Any]) -> list[str]:
+    hints: list[str] = []
+    matched_problem = evidence_mapping.get("matchedProblem")
+    if isinstance(matched_problem, Mapping):
+        _append_unique_text(hints, matched_problem.get("solutionHints") or ())
+    if hints:
+        return hints
+
+    for problem in evidence_mapping.get("similarProblems") or ():
+        if isinstance(problem, Mapping):
+            _append_unique_text(hints, problem.get("solutionHints") or ())
+    return hints
+
+
+def _append_unique_text(items: list[str], values: object) -> None:
+    if isinstance(values, str):
+        iterable: Sequence[object] = (values,)
+    elif isinstance(values, Sequence):
+        iterable = values
+    else:
+        iterable = ()
+    for value in iterable:
+        text = str(value).strip()
+        if text and text not in items:
+            items.append(text)
+
+
+def _retrieval_concept_id(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "unknown"
+
+
+def _retrieval_concept_kind(name: str) -> str:
+    lowered = name.lower()
+    if lowered in {"bfs", "dfs", "dijkstra", "dynamic programming", "binary search"}:
+        return "algorithm"
+    if lowered in {"visited array", "visited set", "state tracking"}:
+        return "technique"
+    if lowered in {"queue", "stack", "heap", "array", "hash map"}:
+        return "data_structure"
+    if lowered in {"graph traversal", "sliding window"}:
+        return "pattern"
+    return "concept"
+
+
+def _retrieval_concept_description(name: str) -> str:
+    readable_name = re.sub(r"\s+", " ", name).strip()
+    return f"檢索證據指出 {readable_name} 與輸入直接相關。"
+
+
+def _display_problem_type(problem_type: str) -> str:
+    if problem_type == "Graph Traversal":
+        return GRAPH_TRAVERSAL_TYPE
+    return problem_type
+
+
 def _unsupported_analysis_response(
     *,
     text: str,
@@ -618,23 +781,29 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
             )
         )
 
-    try:
-        result = analyze_programming_input(text)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if _is_unsupported_result(result):
-        return _unsupported_json_response(
-            _unsupported_analysis_response(
-                text=text,
-                input_kind="unknown",
-                retrieval_config=retrieval_config,
-                retrieval_backend=runtime_retrieval.backend,
-                retrieval_trace=retrieval_trace,
-                evidence_mapping=evidence_mapping,
-                debug=debug,
-                abstention_reason=result.similarity_reason,
+    has_strong_retrieval_evidence = _has_strong_retrieval_evidence(
+        pipeline_result,
+        evidence_mapping,
+    )
+    result = None
+    if not has_strong_retrieval_evidence:
+        try:
+            result = analyze_programming_input(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if _is_unsupported_result(result):
+            return _unsupported_json_response(
+                _unsupported_analysis_response(
+                    text=text,
+                    input_kind="unknown",
+                    retrieval_config=retrieval_config,
+                    retrieval_backend=runtime_retrieval.backend,
+                    retrieval_trace=retrieval_trace,
+                    evidence_mapping=evidence_mapping,
+                    debug=debug,
+                    abstention_reason=result.similarity_reason,
+                )
             )
-        )
 
     retrieval_evidence_paths = _analysis_paths_from_graph_trace(
         evidence_mapping["graphPaths"]
@@ -659,13 +828,22 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
         if pipeline_result.matched_problem is not None
         else set()
     )
-
-    return AnalysisResponse(
-        queryId=build_query_id(text, response_input_kind),
-        usedMockData=result.used_mock_data,
-        inputKind=response_input_kind,
-        problemType=result.problem_type,
-        requiredConcepts=[
+    if has_strong_retrieval_evidence:
+        problem_type = _retrieval_problem_type(pipeline_result, evidence_mapping)
+        required_concepts = _retrieval_required_concept_responses(
+            pipeline_result,
+            evidence_mapping,
+        )
+        similarity_reason = _retrieval_similarity_reason(
+            pipeline_result,
+            required_concepts,
+        )
+        solving_hints = _retrieval_solving_hints(evidence_mapping)
+        used_mock_data = False
+    else:
+        assert result is not None
+        problem_type = result.problem_type
+        required_concepts = [
             RequiredConceptResponse(
                 id=concept.id,
                 name=concept.name,
@@ -673,14 +851,27 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
                 description=concept.description,
             )
             for concept in result.required_concepts
-        ],
+        ]
+        similarity_reason = result.similarity_reason
+        solving_hints = list(result.solving_hints)
+        used_mock_data = result.used_mock_data
+    common_mistakes = evidence_common_mistakes or (
+        list(result.common_mistakes) if result is not None else []
+    )
+
+    return AnalysisResponse(
+        queryId=build_query_id(text, response_input_kind),
+        usedMockData=used_mock_data,
+        inputKind=response_input_kind,
+        problemType=problem_type,
+        requiredConcepts=required_concepts,
         similarProblems=_similar_problem_responses_from_candidates(
             pipeline_result.reranked_candidates,
             matched_problem_ids=matched_problem_ids,
         ),
-        similarityReason=result.similarity_reason,
-        solvingHints=list(result.solving_hints),
-        commonMistakes=evidence_common_mistakes or list(result.common_mistakes),
+        similarityReason=similarity_reason,
+        solvingHints=solving_hints,
+        commonMistakes=common_mistakes,
         evidencePaths=retrieval_evidence_paths,
         retrievalConfig=retrieval_config,
         retrievalBackend=runtime_retrieval.backend if debug else None,

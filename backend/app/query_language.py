@@ -170,10 +170,30 @@ def extract_low_weight_terms(text: str) -> tuple[str, ...]:
     return tuple(term for term in LOW_WEIGHT_TERMS if term in text)
 
 
+def _naked_concept_query_seed(
+    text: str,
+    matched_canonicals: tuple[str, ...],
+) -> str | None:
+    normalized_query = " ".join(text.strip().lower().split())
+    if not normalized_query:
+        return None
+
+    for rule in ALIAS_RULES:
+        if not rule.entity_id or rule.canonical_name not in matched_canonicals:
+            continue
+        if any(normalized_query == term.lower() for term in _ordered_terms(rule)):
+            return rule.canonical_name
+    return None
+
+
 def infer_concept_seeds(text: str, exact_terms: tuple[str, ...]) -> tuple[str, ...]:
     matched_canonicals = _matched_canonical_names(text, exact_terms)
     exact_term_set = set(exact_terms)
     seeds: list[str] = []
+
+    naked_concept_seed = _naked_concept_query_seed(text, matched_canonicals)
+    if naked_concept_seed is not None:
+        seeds.append(naked_concept_seed)
 
     if "BFS" in matched_canonicals:
         seeds.extend(("BFS", "Queue", "Visited Array"))

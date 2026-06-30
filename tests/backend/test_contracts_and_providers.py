@@ -15,7 +15,10 @@ from backend.app.providers import DeterministicMockEmbeddingProvider
 from backend.app.stores import (
     BM25Document,
     BM25Store,
+    GraphQueryStore,
+    GraphRelatedProblemLookup,
     GraphStore,
+    GraphWriteStore,
     SearchCandidate,
     VectorRecord,
     VectorStore,
@@ -157,6 +160,7 @@ def test_retrieval_trace_and_evidence_bundle_have_expected_debug_shape():
         "entityLinking",
         "vectorCandidates",
         "graphCandidates",
+        "graphSearchStatus",
         "bm25Candidates",
         "fusionScores",
         "rerankerScores",
@@ -165,6 +169,29 @@ def test_retrieval_trace_and_evidence_bundle_have_expected_debug_shape():
     assert bundle.to_mapping()["commonMistakes"] == ["forget visited"]
     assert bundle.to_mapping()["matchedProblem"] == {"id": "uva-10653", "matchKind": "exact_problem_id"}
     assert bundle.to_mapping()["techniqueEvidence"] == ["grid BFS"]
+
+
+def test_retrieval_trace_preserves_legacy_positional_constructor_order():
+    trace = RetrievalTrace(
+        {"intent": "problem_search"},
+        [{"entityId": "concept:bfs"}],
+        [{"id": "vector"}],
+        [{"id": "graph"}],
+        [{"id": "bm25"}],
+        [{"id": "fusion"}],
+        [{"id": "reranker"}],
+        {"id": "matched"},
+    )
+
+    assert trace.graph_search_status == "none"
+
+    payload = trace.to_mapping()
+
+    assert payload["bm25Candidates"] == [{"id": "bm25"}]
+    assert payload["fusionScores"] == [{"id": "fusion"}]
+    assert payload["rerankerScores"] == [{"id": "reranker"}]
+    assert payload["matchedProblem"] == {"id": "matched"}
+    assert payload["graphSearchStatus"] == "none"
 
 
 def test_deterministic_mock_embedding_provider_is_stable_and_normalized():
@@ -214,6 +241,9 @@ def test_store_protocols_are_structural_contracts():
         def find_paths(self, source_id, target_id, *, max_hops=3):
             return ({"nodes": [source_id, "concept:bfs", target_id]},)
 
+        def find_related_problem_ids(self, entity_id, *, top_k=10):
+            return ()
+
     vector_store = MemoryVectorStore()
     bm25_store = MemoryBM25Store()
     graph_store = MemoryGraphStore()
@@ -221,6 +251,9 @@ def test_store_protocols_are_structural_contracts():
     assert isinstance(vector_store, VectorStore)
     assert isinstance(bm25_store, BM25Store)
     assert isinstance(graph_store, GraphStore)
+    assert isinstance(graph_store, GraphWriteStore)
+    assert isinstance(graph_store, GraphQueryStore)
+    assert isinstance(graph_store, GraphRelatedProblemLookup)
 
     vector_store.upsert((VectorRecord(id="chunk-1", vector=(0.1, 0.2), payload={}),))
     bm25_store.index_documents((BM25Document(id="chunk-1", text="BFS shortest path"),))

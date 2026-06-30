@@ -114,3 +114,46 @@ class Neo4jGraphStore:
         with self._driver.session() as session:
             result = session.run(query, sourceId=source_id, targetId=target_id)
             return tuple(dict(record["path"]) for record in result)
+
+    def find_related_problem_ids(
+        self,
+        entity_id: str,
+        *,
+        top_k: int = 10,
+    ) -> tuple[str, ...]:
+        top_k = max(1, min(int(top_k), 100))
+        metadata_query = """
+            MATCH (entity:KnowledgeEntity {id: $entityId})
+            UNWIND coalesce(entity.problemIds, []) AS problemId
+            RETURN problemId
+            LIMIT $topK
+        """
+        adjacent_problem_query = """
+            MATCH (entity:KnowledgeEntity {id: $entityId})-[]-(problem:KnowledgeEntity)
+            WHERE problem.type = 'problem'
+            RETURN DISTINCT problem.id AS problemId
+            ORDER BY problemId
+            LIMIT $topK
+        """
+        params = {"entityId": entity_id, "topK": top_k}
+        with self._driver.session() as session:
+            problem_ids = _problem_ids_from_records(session.run(metadata_query, **params))
+            if problem_ids:
+                return problem_ids
+            return _problem_ids_from_records(session.run(adjacent_problem_query, **params))
+
+
+def _problem_ids_from_records(records: Any) -> tuple[str, ...]:
+    problem_ids: list[str] = []
+    for record in records:
+        problem_id: Any = None
+        try:
+            problem_id = record["problemId"]
+        except (KeyError, TypeError):
+            try:
+                problem_id = record["id"]
+            except (KeyError, TypeError):
+                pass
+        if problem_id is not None:
+            problem_ids.append(str(problem_id))
+    return tuple(problem_ids)

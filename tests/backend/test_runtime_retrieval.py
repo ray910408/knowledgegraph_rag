@@ -174,6 +174,9 @@ class FakeGraphStore:
             )
         return ()
 
+    def find_related_problem_ids(self, entity_id: str, *, top_k: int = 10):
+        return ()
+
 
 def test_load_runtime_retrieval_settings_defaults_to_local():
     from backend.app.retrieval.runtime import load_runtime_retrieval_settings

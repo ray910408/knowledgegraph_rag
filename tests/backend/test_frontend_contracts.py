@@ -100,6 +100,34 @@ def test_frontend_trace_contract_supports_multilingual_query_understanding_field
     assert "expandedTerms" in app_source
 
 
+def test_frontend_trace_contract_supports_graph_search_status():
+    api_source = API_TS.read_text(encoding="utf-8")
+    types_source = TYPES_TS.read_text(encoding="utf-8")
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    normalize_trace_body = _function_body(api_source, "function normalizeTrace")
+    retrieval_trace_body = _function_body(types_source, "export interface RetrievalTrace")
+    start = app_source.index("function RetrievalPanel")
+    end = app_source.index("function FusionPanel", start)
+    retrieval_panel_body = app_source[start:end]
+
+    assert re.search(
+        r'type\s+GraphSearchStatus\s*=\s*"none"\s*\|\s*"candidates"\s*\|\s*'
+        r'"paths_only"\s*\|\s*\(string\s*&\s*\{\s*\}\s*\)\s*;',
+        types_source,
+    )
+    assert re.search(
+        r"^\s*graphSearchStatus\?:\s*GraphSearchStatus;\s*$",
+        retrieval_trace_body,
+        flags=re.MULTILINE,
+    )
+    assert (
+        'firstPresent(record, ["graphSearchStatus", "graph_search_status"])'
+        in normalize_trace_body
+    )
+    assert 'trace?.graphSearchStatus === "paths_only"' in retrieval_panel_body
+    assert "有圖路徑證據，但沒有候選題目。" in retrieval_panel_body
+
+
 def test_frontend_accepts_technique_concept_kind():
     api_source = API_TS.read_text(encoding="utf-8")
     types_source = TYPES_TS.read_text(encoding="utf-8")

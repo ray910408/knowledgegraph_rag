@@ -78,6 +78,7 @@ const fallbackTrace: RetrievalTrace = {
     { id: "leetcode-1091", title: "Shortest Path in Binary Matrix", source: "vector", score: 0.86 }
   ],
   graphCandidates: [{ id: "uva-10653", title: "Bombs! NO they are Mines!!", source: "graph", score: 1 }],
+  graphSearchStatus: "candidates",
   bm25Candidates: [{ id: "leetcode-994", title: "Rotting Oranges", source: "bm25", score: 0.74 }],
   fusionScores: [
     { id: "uva-10653", title: "Bombs! NO they are Mines!!", source: "hybrid", score: 0.92 }
@@ -624,6 +625,7 @@ function normalizeTrace(value: unknown): RetrievalTrace {
     entityLinking: pickArray(record, ["entityLinking"]).filter((item): item is UnknownRecord => asRecord(item) !== null),
     vectorCandidates: candidates("vectorCandidates"),
     graphCandidates: candidates("graphCandidates"),
+    graphSearchStatus: asString(firstPresent(record, ["graphSearchStatus", "graph_search_status"]), "none"),
     bm25Candidates: candidates("bm25Candidates"),
     fusionScores: candidates("fusionScores"),
     rerankerScores: candidates("rerankerScores"),
