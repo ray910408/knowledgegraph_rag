@@ -531,6 +531,9 @@ function QueryUnderstandingPanel({ trace }: { trace?: RetrievalTrace }) {
 function RetrievalPanel({ trace }: { trace?: RetrievalTrace }) {
   return (
     <OutputBlock title="三路檢索">
+      {trace?.graphSearchStatus === "paths_only" && (
+        <p className="trace-note">有圖路徑證據，但沒有候選題目。</p>
+      )}
       <div className="retrieval-grid">
         <CandidateList title="向量搜尋 / Qdrant" candidates={trace?.vectorCandidates ?? []} />
         <CandidateList title="圖搜尋 / Neo4j" candidates={trace?.graphCandidates ?? []} />

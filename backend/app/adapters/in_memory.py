@@ -111,6 +111,38 @@ class InMemoryGraphStore:
                     queue.append((relation.target_id, next_nodes, next_relations))
         return tuple(paths)
 
+    def find_related_problem_ids(
+        self,
+        entity_id: str,
+        *,
+        top_k: int = 10,
+    ) -> tuple[str, ...]:
+        problem_ids: list[str] = []
+        entity = self._entities.get(entity_id)
+        if entity is not None:
+            for problem_id in entity.problem_ids:
+                _append_unique(problem_ids, problem_id)
+
+        for relation in self._relations:
+            if relation.source_id == entity_id and _is_problem_entity(self._entities, relation.target_id):
+                _append_unique(problem_ids, relation.target_id)
+            elif relation.target_id == entity_id and _is_problem_entity(self._entities, relation.source_id):
+                _append_unique(problem_ids, relation.source_id)
+
+        return tuple(problem_ids[: max(top_k, 0)])
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
+def _is_problem_entity(entities: dict[str, EntityRecord], entity_id: str) -> bool:
+    entity = entities.get(entity_id)
+    if entity is not None:
+        return entity.type == "problem"
+    return entity_id.casefold().startswith(("leetcode-", "uva-"))
+
 
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     numerator = sum(a * b for a, b in zip(left, right))

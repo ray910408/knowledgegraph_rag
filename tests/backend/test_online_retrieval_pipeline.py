@@ -105,6 +105,22 @@ def _documents() -> tuple[RetrievalDocument, ...]:
     )
 
 
+def _queue_documents() -> tuple[RetrievalDocument, ...]:
+    return (
+        _documents()[0],
+        RetrievalDocument(
+            id="leetcode-1091",
+            source="LeetCode",
+            source_id="1091",
+            title="Shortest Path in Binary Matrix",
+            text="Use BFS with a queue to find the shortest path in a binary matrix.",
+            answer="Run BFS over eight directions.",
+            concepts=("BFS", "Queue"),
+            problem_type="Graph Traversal",
+        ),
+    )
+
+
 def _store_payload(document: RetrievalDocument) -> dict[str, object]:
     return {
         "problemId": document.id,
@@ -340,6 +356,20 @@ def test_graph_search_returns_paths_for_chinese_problem_query():
     assert result.candidates[0].id == "leetcode-994"
     assert result.paths
     assert any(_path_node_ids(path)[-1] == "concept:bfs" for path in result.paths)
+
+
+def test_query_understanding_promotes_bare_queue_to_concept_seed():
+    result = OnlineQueryPipeline(documents=_queue_documents()).run("queue", top_k=3)
+    trace = result.trace.to_mapping()
+    understanding = trace["queryUnderstanding"]
+
+    assert "Queue" in understanding["conceptSeeds"]
+    assert "concept:queue" in understanding["queryVariants"]["graphSeeds"]
+    assert [candidate.id for candidate in result.graph_candidates] == [
+        "leetcode-1091",
+        "leetcode-994",
+    ]
+    assert len({candidate.score for candidate in result.graph_candidates}) == 1
 
 
 def test_vector_search_service_can_use_vector_store():
@@ -958,6 +988,51 @@ def test_graph_relation_vocabulary_preserves_requires_and_has_pattern():
     assert "normalizedFrom" not in requires
     assert has_pattern["type"] == "HAS_PATTERN"
     assert "normalizedFrom" not in has_pattern
+
+
+def test_store_graph_search_uses_concept_problem_ids_when_paths_are_absent():
+    documents = _queue_documents()
+    graph_store = InMemoryGraphStore()
+    graph_store.upsert_entities(
+        (
+            EntityRecord(
+                id="concept:queue",
+                name="Queue",
+                type="data_structure",
+                problem_ids=("leetcode-994", "leetcode-1091"),
+            ),
+            EntityRecord(
+                id=documents[0].id,
+                name=documents[0].title,
+                type="problem",
+            ),
+            EntityRecord(
+                id=documents[1].id,
+                name=documents[1].title,
+                type="problem",
+            ),
+        )
+    )
+
+    understanding = QueryUnderstandingService(documents).understand("queue")
+    linked = EntityLinkingService().link(understanding)
+    result = GraphSearchService(documents, graph_store=graph_store).search(
+        linked,
+        top_k=3,
+    )
+
+    expected_ids = ["leetcode-1091", "leetcode-994"]
+    assert [candidate.id for candidate in result.candidates] == expected_ids
+    assert len({candidate.score for candidate in result.candidates}) == 1
+
+    candidate_paths = [
+        path
+        for path in result.paths
+        if path["graphPathOperation"] == "candidate_retrieval"
+    ]
+    assert len(candidate_paths) == len(expected_ids)
+    assert [_path_node_ids(path)[0] for path in candidate_paths] == expected_ids
+    assert [path["pathSource"] for path in candidate_paths] == ["neo4j", "neo4j"]
 
 
 def test_graph_relation_fallback_records_normalized_from_for_unknown_types():
@@ -2367,6 +2442,31 @@ def test_online_pipeline_promotes_exact_problem_seed_without_polluting_similar_p
         "concept:bfs",
     ]
     assert result.graph_paths[0]["pathSource"] == "inferred"
+
+
+def test_online_pipeline_marks_exact_problem_graph_result_as_paths_only():
+    document = RetrievalDocument(
+        id="uva-1121",
+        source="UVa",
+        source_id="1121",
+        title="Subsequence",
+        text="Find the shortest contiguous subsequence with sum at least S.",
+        answer="Use a sliding window.",
+        concepts=("Sliding Window", "Two Pointers"),
+        problem_type="Sliding Window",
+        solution_hints=("Move right to expand the window.", "Move left while the sum stays large enough."),
+    )
+
+    result = OnlineQueryPipeline(documents=(document,)).run(
+        "uva-1121 Subsequence",
+        top_k=3,
+    )
+    trace = result.trace.to_mapping()
+
+    assert result.matched_problem is not None
+    assert result.graph_candidates == ()
+    assert result.graph_paths
+    assert trace["graphSearchStatus"] == "paths_only"
 
 
 def test_matched_problem_pin_does_not_change_similar_problem_ranking():

@@ -15,11 +15,18 @@ from ..query_language import (
     build_query_language_profile,
     shared_multilingual_tokens,
 )
-from ..stores import BM25Store, GraphStore, SearchCandidate, VectorStore
+from ..stores import (
+    BM25Store,
+    GraphQueryStore,
+    GraphRelatedProblemLookup,
+    SearchCandidate,
+    VectorStore,
+)
 
 
 JsonMap = dict[str, Any]
 RetrievalMode = Literal["hybrid", "vector", "graph"]
+GraphSearchStatus = Literal["none", "candidates", "paths_only"]
 _MAX_STORE_FETCH_ATTEMPTS = 4
 _MAX_STORE_FETCH_WINDOW = 100
 _FALLBACK_COMMON_MISTAKES = (
@@ -624,7 +631,7 @@ class GraphSearchService:
     def __init__(
         self,
         documents: Sequence[RetrievalDocument],
-        graph_store: GraphStore | None = None,
+        graph_store: GraphQueryStore | None = None,
     ) -> None:
         self._documents = tuple(documents)
         self._graph_store = graph_store
@@ -769,13 +776,56 @@ class GraphSearchService:
                     document_paths_by_entity.setdefault(entity_id, []).append(normalized)
                     paths.append(normalized)
 
+                if entity_id in document_paths_by_entity:
+                    continue
+                related_problem_ids = (
+                    self._graph_store.find_related_problem_ids(
+                        entity_id,
+                        top_k=top_k,
+                    )
+                    if isinstance(self._graph_store, GraphRelatedProblemLookup)
+                    else ()
+                )
+                if document.id not in related_problem_ids:
+                    continue
+                entity_name = str(entity.get("name", entity_id))
+                metadata_path = _canonical_graph_path(
+                    document,
+                    target_node=entity_id,
+                    target_label=entity_name,
+                    path_source="neo4j",
+                    operation="candidate_retrieval",
+                    edge_weight=1.0,
+                    rationale=(
+                        f"Neo4j metadata linked concept {entity_name} "
+                        f"to {document.title}."
+                    ),
+                )
+                metadata_path["storePath"] = {
+                    "nodes": [entity_id, document.id],
+                    "relations": ["RELATED_PROBLEM_ID"],
+                }
+                document_paths_by_entity.setdefault(entity_id, []).append(metadata_path)
+                paths.append(metadata_path)
+
             if not document_paths_by_entity:
                 continue
             score = min(len(document_paths_by_entity) / linked_entity_count, 1.0)
             candidates.append(_candidate_from_document(document, source="graph", score=score))
 
+        ranked_candidates = sorted(candidates, key=lambda item: (-item.score, item.id))
+        candidate_rank = {
+            candidate.id: index
+            for index, candidate in enumerate(ranked_candidates)
+        }
+        paths.sort(
+            key=lambda path: candidate_rank.get(
+                _graph_path_problem_id(path),
+                len(candidate_rank),
+            )
+        )
         return GraphSearchResult(
-            candidates=tuple(sorted(candidates, key=lambda item: (-item.score, item.id))[:top_k]),
+            candidates=tuple(ranked_candidates[:top_k]),
             paths=tuple(paths),
         )
 
@@ -1314,7 +1364,7 @@ class OnlineQueryPipeline:
         embedding_provider: EmbeddingProvider | None = None,
         vector_store: VectorStore | None = None,
         bm25_store: BM25Store | None = None,
-        graph_store: GraphStore | None = None,
+        graph_store: GraphQueryStore | None = None,
     ) -> None:
         self._documents = tuple(documents) if documents is not None else _load_default_documents()
         self._embedding_provider = embedding_provider or DeterministicMockEmbeddingProvider()
@@ -1385,6 +1435,10 @@ class OnlineQueryPipeline:
             graph_result.paths,
             target_problem_ids,
         )
+        graph_search_status = _graph_search_status(
+            graph_result.candidates,
+            pruned_graph_paths or graph_result.paths,
+        )
         trace = RetrievalTrace(
             query_understanding=understanding.to_mapping(),
             entity_linking=[dict(entity) for entity in linked_entities],
@@ -1396,6 +1450,7 @@ class OnlineQueryPipeline:
                 _candidate_mapping(candidate, stage="graph")
                 for candidate in graph_result.candidates
             ],
+            graph_search_status=graph_search_status,
             bm25_candidates=[
                 _candidate_mapping(candidate, stage="bm25")
                 for candidate in bm25_candidates
@@ -2080,6 +2135,17 @@ def _prune_graph_paths(
         )
         pruned.extend(dict(path) for path in problem_paths[:max_paths_per_problem])
     return tuple(pruned)
+
+
+def _graph_search_status(
+    graph_candidates: Sequence[RetrievalCandidate],
+    graph_paths: Sequence[JsonMap],
+) -> GraphSearchStatus:
+    if graph_candidates:
+        return "candidates"
+    if graph_paths:
+        return "paths_only"
+    return "none"
 
 
 def _graph_path_target_label(path: JsonMap) -> str:

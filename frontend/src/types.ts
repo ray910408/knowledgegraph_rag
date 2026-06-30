@@ -143,6 +143,8 @@ export interface GraphPathTrace {
   scoreMeta?: ScoreMeta;
 }
 
+export type GraphSearchStatus = "none" | "candidates" | "paths_only" | (string & {});
+
 export interface RetrievalTrace {
   queryUnderstanding: {
     originalQuery?: string;
@@ -165,6 +167,7 @@ export interface RetrievalTrace {
   entityLinking: Array<Record<string, unknown>>;
   vectorCandidates: TraceCandidate[];
   graphCandidates: TraceCandidate[];
+  graphSearchStatus?: GraphSearchStatus;
   bm25Candidates: TraceCandidate[];
   fusionScores: TraceCandidate[];
   rerankerScores: TraceCandidate[];

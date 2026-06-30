@@ -203,6 +203,7 @@ class RetrievalTrace:
     bm25_candidates: list[JsonMap] = field(default_factory=list)
     fusion_scores: list[JsonMap] = field(default_factory=list)
     reranker_scores: list[JsonMap] = field(default_factory=list)
+    graph_search_status: str = field(default="none", kw_only=True)
     matched_problem: JsonMap | None = None
 
     def to_mapping(self) -> JsonMap:
@@ -211,6 +212,7 @@ class RetrievalTrace:
             "entityLinking": [dict(item) for item in self.entity_linking],
             "vectorCandidates": [dict(item) for item in self.vector_candidates],
             "graphCandidates": [dict(item) for item in self.graph_candidates],
+            "graphSearchStatus": self.graph_search_status,
             "bm25Candidates": [dict(item) for item in self.bm25_candidates],
             "fusionScores": [dict(item) for item in self.fusion_scores],
             "rerankerScores": [dict(item) for item in self.reranker_scores],

@@ -43,6 +43,20 @@ def _clear_runtime_retrieval() -> None:
         pass
 
 
+def _required_concept_names(payload: dict[str, object]) -> set[str]:
+    return {
+        str(concept["name"])
+        for concept in payload["requiredConcepts"]  # type: ignore[index]
+    }
+
+
+def _similar_problem_ids(payload: dict[str, object]) -> set[str]:
+    return {
+        str(problem["id"])
+        for problem in payload["similarProblems"]  # type: ignore[index]
+    }
+
+
 def test_similar_problem_responses_keep_source_ids_optional_and_accept_aliases():
     def candidate(candidate_id: str, payload: dict[str, str]) -> RetrievalCandidate:
         return RetrievalCandidate(
@@ -1020,6 +1034,47 @@ def test_analysis_exact_problem_query_exposes_consistent_matched_problem():
     )
 
 
+def test_analysis_exact_sliding_window_problem_uses_retrieval_fields():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "uva-1121 Subsequence", "mode": "hybrid", "topK": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["matchedProblem"]["id"] == "uva-1121"
+    assert payload["matchedProblem"]["problemType"] == "Sliding Window"
+    assert payload["problemType"] == "Sliding Window"
+
+    concept_names = _required_concept_names(payload)
+    assert {"Sliding Window", "Two Pointers"}.issubset(concept_names)
+    assert "BFS" not in concept_names
+
+    hint_text = " ".join(payload["solvingHints"]).lower()
+    assert "left" in hint_text or "right" in hint_text or "指標" in hint_text
+    assert "先建圖" not in hint_text
+    assert "uva-1121" not in _similar_problem_ids(payload)
+
+
+def test_analysis_exact_problem_reports_paths_only_graph_status():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "uva-1121 Subsequence", "mode": "hybrid", "topK": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    trace = payload["retrievalTrace"]
+    assert trace["graphCandidates"] == []
+    assert payload["evidenceBundle"]["graphPaths"]
+    assert trace["graphSearchStatus"] == "paths_only"
+
+
 def test_analysis_uses_canonical_problem_ids_across_response_surfaces():
     client = TestClient(app)
 
@@ -1178,6 +1233,38 @@ def test_analysis_unknown_unrelated_input_abstains_without_graph_or_bfs_evidence
     assert payload["retrievalTrace"]["fusionScores"] == []
     assert payload["retrievalTrace"]["rerankerScores"] == []
     assert "BFS" not in response.text
+
+
+def test_analysis_bare_queue_concept_query_returns_related_graph_problems():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "queue", "mode": "hybrid", "topK": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload.get("abstentionReason") is None
+
+    understanding = payload["retrievalTrace"]["queryUnderstanding"]
+    assert "Queue" in understanding["conceptSeeds"]
+    assert "concept:queue" in understanding["queryVariants"]["graphSeeds"]
+
+    graph_candidate_ids = {
+        candidate["id"]
+        for candidate in payload["retrievalTrace"]["graphCandidates"]
+    }
+    assert graph_candidate_ids & {
+        "leetcode-1091",
+        "leetcode-994",
+        "uva-10653",
+        "uva-11624",
+        "uva-532",
+    }
+    assert "Queue" in _required_concept_names(payload)
+    assert payload["similarProblems"]
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from backend.app.adapters.in_memory import InMemoryBM25Store, InMemoryGraphStore, InMemoryVectorStore
 from backend.app.adapters.neo4j import Neo4jGraphStore
@@ -124,6 +125,77 @@ def test_qdrant_vector_store_uses_injected_client_without_docker():
 
     assert client.upserts
     assert results == (SearchCandidate(id="chunk-1", score=0.9, payload={"problemId": "leetcode-994"}),)
+
+
+def test_neo4j_graph_store_finds_related_problem_ids_from_concept_metadata():
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, **params):
+            self.calls.append((query, params))
+            if re.search(r"\b[A-Za-z_]\w*\.problemIds\b", query):
+                return [
+                    {"problemId": "leetcode-1091"},
+                    {"problemId": "leetcode-994"},
+                ]
+            return []
+
+    class FakeDriver:
+        def __init__(self):
+            self.session_instance = FakeSession()
+
+        def session(self):
+            return self.session_instance
+
+    driver = FakeDriver()
+    store = Neo4jGraphStore(driver=driver)
+
+    problem_ids = store.find_related_problem_ids("concept:queue", top_k=2)
+
+    assert problem_ids == ("leetcode-1091", "leetcode-994")
+    assert len(driver.session_instance.calls) == 1
+    query, params = driver.session_instance.calls[0]
+    assert re.search(r"\b[A-Za-z_]\w*\.problemIds\b", query)
+    assert "$entityId" in query
+    assert "$topK" in query
+    assert params == {"entityId": "concept:queue", "topK": 2}
+
+
+def test_in_memory_graph_store_finds_related_problem_ids_by_entity_type():
+    store = InMemoryGraphStore()
+    store.upsert_entities(
+        (
+            EntityRecord(
+                id="concept:queue",
+                name="Queue",
+                type="data_structure",
+            ),
+            EntityRecord(
+                id="custom-problem-1",
+                name="Custom Queue Problem",
+                type="problem",
+            ),
+        )
+    )
+    store.upsert_relations(
+        (
+            RelationRecord(
+                id="custom-problem-1->concept:queue",
+                source_id="custom-problem-1",
+                target_id="concept:queue",
+                type="REQUIRES",
+            ),
+        )
+    )
+
+    assert store.find_related_problem_ids("concept:queue") == ("custom-problem-1",)
 
 
 def test_neo4j_graph_store_uses_injected_driver_without_docker():
