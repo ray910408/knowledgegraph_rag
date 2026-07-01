@@ -61,6 +61,11 @@ topK
 
 過大的輸入會在分析前被拒絕，回 `413`，且 `detail.code` 會是 `input_too_large`。
 
+`zh-Hant` 的 `abstentionReason` 必須維持下列精確字串：
+
+- `未偵測到程式題、程式碼、演算法概念或可靠檢索證據。`
+- `輸入超出目前支援範圍，請提供程式題敘、題號、程式碼或已知演算法概念。`
+
 頂層欄位：
 
 ```text
@@ -81,6 +86,13 @@ retrievalConfig
 retrievalTrace
 evidenceBundle
 ```
+
+### `/api/analysis` 回應 scope 規則
+
+- 頂層 `similarProblems` 由 `EvidenceBuilder` scope selection 後的 `evidenceBundle.similarProblems` 派生，不得在 scope selection 後直接讀取 raw `reranked_candidates`。
+- exact problem match 時，`matchedProblem` 會固定為 evidence anchor；`algorithmEvidence`、`dataStructureEvidence`、`patternEvidence`、`techniqueEvidence`、`commonMistakes` 與 `solvingHints` 必須以此 anchor 與 canonical concept scope 為準。顯示用相似題是 optional，可保留同 scope 的 filtered display candidates，但不得混入 raw unrelated candidates。
+- concept-only query（例如 `DP`、`dynamic programming`、`動態規劃`）必須把 `DP` 與 `Dynamic Programming` 視為同一個 canonical concept。
+- concept-only query 的 `requiredConcepts` 只能來自 query seeds 與 filtered evidence，不得從 raw reranked candidates 繼承無關概念。
 
 只有在 `debug=true` 才會多出：
 
@@ -250,7 +262,7 @@ matchedProblem
 
 用途：
 
-- `similarProblems`：只來自所選 mode 的最後候選，不混入 exact match。
+- `similarProblems`：只來自 `EvidenceBuilder` 選出的 display candidates；exact match 時，候選的 canonical concept/problem-type scope 必須完整包含於 matched scope，且不得重複 exact match。
 - `graphPaths`：保留 `nodes`、`relations`、`pathSource`、`graphPathOperation`、`pathScoring`、`scoreMeta`。
 - `techniqueEvidence`：放 `Visited Array` 這種不是演算法名稱但很重要的技巧證據。
 - `matchedProblem`：exact problem 命中時，可在 evidence layer 再顯示一次同一筆 canonical record。

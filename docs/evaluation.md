@@ -74,6 +74,10 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\quick-start.ps1 -Check -S
 | 過大輸入 | 超大輸入要回 HTTP `413` 與 `input_too_large`。 |
 | 分數標籤 | 所有對外顯示的 candidate 與 graph path 分數都要帶 `scoreMeta`，不能跨 stage 直接比較。 |
 | 識別欄位 join | 回應記錄要使用 canonical `id`，並保留 source-local `sourceId`。 |
+| DP concept-only query | `DP`、`dynamic programming`、`動態規劃` 都要回 `status=ok` 的 DP 回應，且不得出現 `BFS`、`Queue`、`Visited Array` evidence。 |
+| Exact `uva-437` | `matchedProblem.id` 必須是 `uva-437`；evidence、`requiredConcepts`、`commonMistakes` 與 hints 只能限於 `DP`、`LIS`、`Sorting` 相關內容。 |
+| 前端範例輸入 | 前端 sample input 要回單一 coherent shortest-path/BFS hint set，不得合併 Fire、Oil、Rotting 題型專屬 hints。 |
+| BFS 後接 `uva-437` | 同一流程先查 BFS sample query 再查 `uva-437` 時，第二次回應不得殘留 BFS/shortest-path stale evidence。 |
 
 ## 手動 smoke query
 

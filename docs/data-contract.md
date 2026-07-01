@@ -412,7 +412,7 @@ store 模式 graph path 會同時保留穩定形狀與原始路徑：
 規則：
 
 - `nodes` / `relations`：穩定的 public shape。
-- `storePath`：保留 Neo4j 原始路徑。
+- `storePath`：只保留與 selected evidence scope 一致的 Neo4j 原始路徑；若含 scope 外概念，public evidence 會省略此欄位，完整路徑僅留在 debug trace。
 - `graphPathOperation`：`candidate_retrieval` 或 `exact_expansion`。
 - node layer 可為 `problem`、`chunk`、`concept`、`code_feature`、`pattern`、`source`。
 
@@ -448,6 +448,20 @@ retrievalBackend
 
 `matchedProblem` 代表 exact canonical problem hit，會跟 `similarProblems` 分開。
 
+### `EvidenceBuilder` scope 契約
+
+`EvidenceBuilder` 負責在 reranking 後切出兩種候選 scope：
+
+- `evidence_candidates`：可貢獻 `algorithmEvidence`、`dataStructureEvidence`、`patternEvidence`、`techniqueEvidence`、`commonMistakes` 與 `solvingHints` 的候選。
+- `display_candidates`：可進入 `evidenceBundle.similarProblems` 與頂層 `similarProblems` 的候選。
+
+scope 規則：
+
+- exact match 時，active scope 一律取自 `matchedProblem` 的 canonical concepts，不受查詢中混入的其他概念影響；只有 matched candidate 能進入 `evidence_candidates`，其他候選的 canonical concept/problem-type scope 必須完整包含於 active scope，才能進入 `display_candidates`。
+- 非 exact 的 concept query 只讓第一個符合 canonical query concepts 的候選進入 `evidence_candidates`；所有符合者仍可進入 `display_candidates`。
+- 頂層 `solvingHints` 會優先使用 `matchedProblem`；沒有 exact match 時，才使用第一個 filtered similar problem。
+- raw reranked candidates 屬於內部中間結果，response fields 不得直接讀取；目前 response 只暴露 scoped/sanitized `retrievalTrace.rerankerScores` 等診斷。若未來要暴露 raw reranked list，必須限於 debug-only，且先 sanitized/scoped。
+
 ## `evidenceBundle` 契約
 
 `evidenceBundle` 包含：
@@ -465,9 +479,10 @@ matchedProblem
 
 重點：
 
-- `similarProblems` 只來自最終 selected-mode candidates。
+- `similarProblems` 只來自 `EvidenceBuilder.display_candidates`。
 - `graphPaths` 可帶 `nodes`、`relations`、`score`、`rationale`、`storePath`、`pathSource`、`graphPathOperation`、`pathScoring`、`scoreMeta`。
-- `evidenceBundle.graphPaths` 是 post-rerank pruned graph paths，只保留 selected evidence 使用的路徑；未裁切的原始路徑只會出現在 debug-only `retrievalTrace.rawGraphPaths`。
+- `evidenceBundle.graphPaths` 會在 evidence/display scope 選定後，再依允許的 candidate IDs 與 active canonical concepts 裁切；頂層 `evidencePaths` 與 `contextPreview` 只使用這份 scoped paths。未裁切的原始路徑只會出現在 debug-only `retrievalTrace.rawGraphPaths`。
+- `provenance`、`rawChunks` 與 `retrievalTrace` 必須在 scope 選定後清理；collection 只接受含 allowlisted scalar fields 的 mapping，任意 scalar item 與未知巢狀自由文字不得進入 response。
 - matched evidence 必須使用 `problemCard`、statement、solution 與 hints；similar evidence 必須使用 `problemCard` 與 `matchedChunk`，讓使用者看見被比對的題目摘要與實際命中片段。
 - `techniqueEvidence` 會放 `Visited Array` 這類技巧證據。
 

@@ -118,6 +118,7 @@ flowchart TD
 - `BM25SearchService` 使用 `queryVariants["bm25"]`，而不是只吃 `normalizedQuery`。本地與 store 模式都只保留 `score > 0` 的候選。
 - `VectorSearchService` 使用 `queryVariants["vector"]`，保留原始查詢於 trace 內。
 - `EntityLinkingService` 會把 `graphSeeds` 直接轉成 linked entities，因此即使沒有 exact matched problem，graph search 也能靠概念種子找路徑。
+- Evidence / response assembly 以 `EvidenceBuilder` 選出的 display / evidence scope 為準；exact 題號與 concept-only query 不會再從 raw reranked candidates 繼承無關的相似題、提示或常見錯誤。
 
 ## Runtime Retrieval Backend
 
