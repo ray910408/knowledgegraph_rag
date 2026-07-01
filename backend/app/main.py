@@ -14,19 +14,22 @@ from .analysis import (
     GRAPH_TRAVERSAL_TYPE,
     analyze_programming_input,
     build_query_id,
+    detect_graph_traversal_signals,
     detect_input_kind,
     has_explicit_problem_reference,
     load_programming_dataset,
 )
 from .demo import build_demo_repositories, recommend_demo_techniques
 from .model_config import DEFAULT_RETRIEVAL_CONFIG, RetrievalModelConfig
-from .retrieval.pipeline import ContextBuilder, EvidenceBuilder
+from .query_language import canonical_concept_name, canonical_concept_names
+from .retrieval.pipeline import ContextBuilder, EvidenceBuilder, is_display_match
 from .retrieval.runtime import RuntimeRetrieval, add_runtime_debug_trace, build_runtime_retrieval
 
 
 RecommendationMode = Literal["hybrid", "vector", "graph"]
 MAX_ANALYSIS_INPUT_CHARS = 8000
-UNSUPPORTED_REASON = "No programming problem, code, concept, or retrieval evidence was detected."
+UNSUPPORTED_REASON = "未偵測到程式題、程式碼、演算法概念或可靠檢索證據。"
+UNSUPPORTED_SCOPE_REASON = "輸入超出目前支援範圍，請提供程式題敘、題號、程式碼或已知演算法概念。"
 
 
 class RecommendationRequest(BaseModel):
@@ -387,11 +390,13 @@ def _is_unsupported_analysis(
     if has_explicit_reference or detect_input_kind(text) != "unknown":
         return False
     matched_problem = getattr(pipeline_result, "matched_problem", None)
-    if matched_problem is not None and getattr(matched_problem, "match_kind", None) != "partial_title":
+    if is_display_match(matched_problem):
         return False
     if matched_problem is not None:
         return True
     if input_kind != "unknown":
+        return False
+    if _has_strong_retrieval_evidence(pipeline_result, evidence_mapping):
         return False
     trace = getattr(pipeline_result, "trace").to_mapping()
     has_programming_signal = any(
@@ -415,7 +420,8 @@ def _has_strong_retrieval_evidence(
     pipeline_result: object,
     evidence_mapping: Mapping[str, Any],
 ) -> bool:
-    if getattr(pipeline_result, "matched_problem", None) is not None:
+    matched_problem = getattr(pipeline_result, "matched_problem", None)
+    if is_display_match(matched_problem):
         return True
 
     understanding = getattr(pipeline_result, "query_understanding", None)
@@ -430,7 +436,7 @@ def _retrieval_problem_type(
     evidence_mapping: Mapping[str, Any],
 ) -> str:
     matched_problem = getattr(pipeline_result, "matched_problem", None)
-    if matched_problem is not None:
+    if is_display_match(matched_problem):
         candidate = getattr(matched_problem, "candidate", None)
         problem_type = str(getattr(candidate, "problem_type", "") or "")
         if problem_type:
@@ -443,10 +449,13 @@ def _retrieval_problem_type(
         if pattern_name:
             return _display_problem_type(pattern_name)
 
-    for candidate in getattr(pipeline_result, "reranked_candidates", ()) or ():
-        problem_type = str(getattr(candidate, "problem_type", "") or "").strip()
+    for problem in evidence_mapping.get("similarProblems") or ():
+        if not isinstance(problem, Mapping):
+            continue
+        problem_type = str(problem.get("problemType") or "").strip()
         if problem_type:
             return _display_problem_type(problem_type)
+        break
     return ""
 
 
@@ -454,26 +463,35 @@ def _retrieval_required_concept_responses(
     pipeline_result: object,
     evidence_mapping: Mapping[str, Any],
 ) -> list[RequiredConceptResponse]:
-    concept_names: list[str] = []
+    scoped_concepts: list[str] = []
     matched_problem = getattr(pipeline_result, "matched_problem", None)
-    if matched_problem is not None:
+    if is_display_match(matched_problem):
+        candidate = getattr(matched_problem, "candidate", None)
         _append_unique_text(
-            concept_names,
-            getattr(getattr(matched_problem, "candidate", None), "concepts", ()) or (),
+            scoped_concepts,
+            getattr(candidate, "concepts", ()) or (),
+        )
+        _append_unique_text(scoped_concepts, getattr(candidate, "problem_type", "") or "")
+    else:
+        understanding = getattr(pipeline_result, "query_understanding", None)
+        _append_unique_text(
+            scoped_concepts,
+            getattr(understanding, "concept_seeds", ()) or (),
         )
 
-    if not concept_names:
-        understanding = getattr(pipeline_result, "query_understanding", None)
-        _append_unique_text(concept_names, getattr(understanding, "concept_seeds", ()) or ())
-        for candidate in getattr(pipeline_result, "reranked_candidates", ()) or ():
-            _append_unique_text(concept_names, getattr(candidate, "concepts", ()) or ())
-        for key in (
-            "algorithmEvidence",
-            "dataStructureEvidence",
-            "techniqueEvidence",
-            "patternEvidence",
-        ):
-            _append_unique_text(concept_names, evidence_mapping.get(key) or ())
+    for problem in evidence_mapping.get("similarProblems") or ():
+        if isinstance(problem, Mapping):
+            _append_unique_text(scoped_concepts, problem.get("sharedConcepts") or ())
+
+    for key in (
+        "algorithmEvidence",
+        "dataStructureEvidence",
+        "techniqueEvidence",
+        "patternEvidence",
+    ):
+        _append_unique_text(scoped_concepts, evidence_mapping.get(key) or ())
+
+    concept_names = canonical_concept_names(scoped_concepts)
 
     return [
         RequiredConceptResponse(
@@ -493,7 +511,7 @@ def _retrieval_similarity_reason(
     concept_names = [concept.name for concept in required_concepts]
     concept_summary = "、".join(concept_names)
     matched_problem = getattr(pipeline_result, "matched_problem", None)
-    if matched_problem is not None:
+    if is_display_match(matched_problem):
         source = getattr(matched_problem, "source", "")
         source_id = getattr(matched_problem, "source_id", "")
         title = getattr(matched_problem, "title", "")
@@ -528,7 +546,269 @@ def _retrieval_solving_hints(evidence_mapping: Mapping[str, Any]) -> list[str]:
     for problem in evidence_mapping.get("similarProblems") or ():
         if isinstance(problem, Mapping):
             _append_unique_text(hints, problem.get("solutionHints") or ())
+            return hints
     return hints
+
+
+def _retrieval_record_id(record: Mapping[str, Any]) -> str:
+    return str(record.get("id") or "")
+
+
+def _retrieval_record_source_pair(record: Mapping[str, Any]) -> tuple[str, str] | None:
+    payload = record.get("payload")
+    payload_mapping = payload if isinstance(payload, Mapping) else {}
+    source = str(
+        payload_mapping.get("documentSource")
+        or record.get("documentSource")
+        or record.get("source")
+        or ""
+    )
+    source_id = str(
+        payload_mapping.get("sourceId")
+        or payload_mapping.get("source_id")
+        or record.get("sourceId")
+        or record.get("source_id")
+        or ""
+    )
+    return (source, source_id) if source and source_id else None
+
+
+def _scope_trace_payload_value(
+    value: object,
+    scoped_concepts: Sequence[str],
+    active_scope: set[str],
+    *,
+    preserve_text: bool,
+    field: str = "",
+) -> object:
+    concept_fields = ("concepts", "sharedConcepts", "shared_concepts")
+    problem_type_fields = ("problemType", "problem_type")
+    safe_fields = {
+        "available",
+        "candidateSource",
+        "chunkCount",
+        "chunkEvidence",
+        "chunk_count",
+        "chunk_evidence",
+        "comparableAcrossStages",
+        "complete",
+        "confidence",
+        "difficulty",
+        "displayLabel",
+        "display_label",
+        "documentSource",
+        "document_source",
+        "id",
+        "kind",
+        "metadata",
+        "missingSources",
+        "missing_sources",
+        "payload",
+        "problemCard",
+        "provenance",
+        "rawChunks",
+        "rawChunksComplete",
+        "raw_chunks",
+        "raw_chunks_complete",
+        "rerankerScore",
+        "score",
+        "scoreMeta",
+        "score_meta",
+        "source",
+        "sourceId",
+        "source_id",
+        "sources",
+        "stage",
+        "storeCandidateId",
+        "storePayload",
+        "store_candidate_id",
+        "store_payload",
+        "unavailableReason",
+        "unavailable_reason",
+        "weight",
+    }
+    safe_text_fields = {"displayText", "display_text", "title"}
+    safe_provenance_fields = {
+        "confidence",
+        "documentSource",
+        "document_source",
+        "id",
+        "kind",
+        "metadata",
+        "score",
+        "source",
+        "sourceId",
+        "source_id",
+        "storeCandidateId",
+        "store_candidate_id",
+        "weight",
+    }
+
+    if field == "metadata" and not isinstance(value, Mapping):
+        return {}
+    if isinstance(value, Mapping):
+        allowed_fields = (
+            safe_provenance_fields
+            if field in {"provenance", "metadata", "source"}
+            else safe_fields
+        )
+        scoped_mapping: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in concept_fields:
+                scoped_mapping[key] = list(scoped_concepts)
+            elif key in problem_type_fields:
+                problem_type = str(item or "")
+                scoped_mapping[key] = (
+                    problem_type
+                    if canonical_concept_name(problem_type) in active_scope
+                    else ""
+                )
+            elif key in allowed_fields or (
+                field not in {"provenance", "metadata", "source"}
+                and preserve_text
+                and key in safe_text_fields
+            ):
+                scoped_mapping[key] = _scope_trace_payload_value(
+                    item,
+                    scoped_concepts,
+                    active_scope,
+                    preserve_text=preserve_text,
+                    field=key,
+                )
+        return scoped_mapping
+    if isinstance(value, (list, tuple)):
+        items = value
+        if field in {"provenance", "rawChunks", "raw_chunks"}:
+            items = tuple(item for item in items if isinstance(item, Mapping))
+        return [
+            _scope_trace_payload_value(
+                item,
+                scoped_concepts,
+                active_scope,
+                preserve_text=preserve_text,
+                field=field,
+            )
+            for item in items
+        ]
+    return value
+
+
+def _scope_trace_candidate(
+    candidate: Mapping[str, Any],
+    scoped_concepts: Sequence[str],
+    active_scope: set[str],
+    *,
+    preserve_content: bool,
+) -> dict[str, Any]:
+    scoped = dict(candidate)
+    concept_fields = ("concepts", "sharedConcepts", "shared_concepts")
+    problem_type_fields = ("problemType", "problem_type")
+
+    for key in concept_fields:
+        if key in scoped or key == "concepts":
+            scoped[key] = list(scoped_concepts)
+    for key in problem_type_fields:
+        if key in scoped:
+            problem_type = str(scoped.get(key) or "")
+            scoped[key] = (
+                problem_type
+                if canonical_concept_name(problem_type) in active_scope
+                else ""
+            )
+
+    payload = scoped.get("payload")
+    if isinstance(payload, Mapping):
+        scoped["payload"] = _scope_trace_payload_value(
+            payload,
+            scoped_concepts,
+            active_scope,
+            preserve_text=preserve_content,
+        )
+    return scoped
+
+
+def _filter_retrieval_trace(
+    retrieval_trace: Mapping[str, Any],
+    evidence_mapping: Mapping[str, Any],
+) -> dict[str, Any]:
+    allowed_ids: set[str] = set()
+    allowed_source_pairs: set[tuple[str, str]] = set()
+    scoped_concepts_by_id: dict[str, list[str]] = {}
+    scoped_concepts_by_source: dict[tuple[str, str], list[str]] = {}
+    active_scope_values: list[str] = []
+
+    def register_allowed(record: Mapping[str, Any]) -> None:
+        record_id = _retrieval_record_id(record)
+        source_pair = _retrieval_record_source_pair(record)
+        scoped_concepts = [str(value) for value in record.get("sharedConcepts") or ()]
+        active_scope_values.extend(scoped_concepts)
+        problem_type = str(record.get("problemType") or record.get("problem_type") or "")
+        if problem_type:
+            active_scope_values.append(problem_type)
+        if record_id:
+            allowed_ids.add(record_id)
+            scoped_concepts_by_id[record_id] = scoped_concepts
+        if source_pair is not None:
+            allowed_source_pairs.add(source_pair)
+            scoped_concepts_by_source[source_pair] = scoped_concepts
+
+    matched_problem = evidence_mapping.get("matchedProblem")
+    matched_id = ""
+    matched_source_pair: tuple[str, str] | None = None
+    if isinstance(matched_problem, Mapping):
+        matched_id = _retrieval_record_id(matched_problem)
+        matched_source_pair = _retrieval_record_source_pair(matched_problem)
+        register_allowed(matched_problem)
+    for problem in evidence_mapping.get("similarProblems") or ():
+        if isinstance(problem, Mapping):
+            register_allowed(problem)
+    for key in (
+        "algorithmEvidence",
+        "dataStructureEvidence",
+        "patternEvidence",
+        "techniqueEvidence",
+    ):
+        active_scope_values.extend(
+            str(value) for value in evidence_mapping.get(key) or ()
+        )
+    active_scope = set(canonical_concept_names(active_scope_values))
+
+    filtered = dict(retrieval_trace)
+    for key in (
+        "vectorCandidates",
+        "graphCandidates",
+        "bm25Candidates",
+        "fusionScores",
+        "rerankerScores",
+    ):
+        filtered_candidates: list[dict[str, Any]] = []
+        for candidate in retrieval_trace.get(key, ()):
+            if not isinstance(candidate, Mapping):
+                continue
+            candidate_id = _retrieval_record_id(candidate)
+            source_pair = _retrieval_record_source_pair(candidate)
+            if candidate_id:
+                if candidate_id not in allowed_ids:
+                    continue
+                scoped_concepts = scoped_concepts_by_id.get(candidate_id)
+            else:
+                if source_pair is None or source_pair not in allowed_source_pairs:
+                    continue
+                scoped_concepts = scoped_concepts_by_source.get(source_pair)
+            filtered_candidates.append(
+                _scope_trace_candidate(
+                    candidate,
+                    scoped_concepts or (),
+                    active_scope,
+                    preserve_content=(
+                        candidate_id == matched_id
+                        if candidate_id
+                        else source_pair == matched_source_pair
+                    ),
+                )
+            )
+        filtered[key] = filtered_candidates
+    return filtered
 
 
 def _append_unique_text(items: list[str], values: object) -> None:
@@ -751,12 +1031,23 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
             runtime_retrieval.provider_sources,
             runtime_retrieval.compatibility_warnings,
         )
+    matched_problem = pipeline_result.matched_problem
+    display_matched_problem = matched_problem if is_display_match(matched_problem) else None
+    evidence_candidates = pipeline_result.reranked_candidates
+    if matched_problem is not None and display_matched_problem is None:
+        evidence_candidates = tuple(
+            candidate
+            for candidate in evidence_candidates
+            if candidate.id != matched_problem.problem_id
+        )
     evidence_bundle = EvidenceBuilder().build(
-        pipeline_result.reranked_candidates,
+        evidence_candidates,
         pipeline_result.graph_paths,
-        matched_problem=pipeline_result.matched_problem,
+        matched_problem=display_matched_problem,
+        query_concepts=pipeline_result.query_understanding.concept_seeds,
     )
     evidence_mapping = evidence_bundle.to_mapping()
+    retrieval_trace = _filter_retrieval_trace(retrieval_trace, evidence_mapping)
     input_kind = pipeline_result.query_understanding.input_kind
     retrieval_config = _retrieval_config_response(
         DEFAULT_RETRIEVAL_CONFIG,
@@ -778,6 +1069,11 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
                 retrieval_trace=retrieval_trace,
                 evidence_mapping=evidence_mapping,
                 debug=debug,
+                abstention_reason=(
+                    UNSUPPORTED_SCOPE_REASON
+                    if detect_graph_traversal_signals(text)
+                    else UNSUPPORTED_REASON
+                ),
             )
         )
 
@@ -801,7 +1097,7 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
                     retrieval_trace=retrieval_trace,
                     evidence_mapping=evidence_mapping,
                     debug=debug,
-                    abstention_reason=result.similarity_reason,
+                    abstention_reason=UNSUPPORTED_SCOPE_REASON,
                 )
             )
 
@@ -820,14 +1116,6 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
         retrieval_trace["rawGraphPaths"] = [
             dict(path) for path in pipeline_result.raw_graph_paths
         ]
-    matched_problem_ids = (
-        {
-            pipeline_result.matched_problem.problem_id,
-            pipeline_result.matched_problem.source_id,
-        }
-        if pipeline_result.matched_problem is not None
-        else set()
-    )
     if has_strong_retrieval_evidence:
         problem_type = _retrieval_problem_type(pipeline_result, evidence_mapping)
         required_concepts = _retrieval_required_concept_responses(
@@ -865,10 +1153,7 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
         inputKind=response_input_kind,
         problemType=problem_type,
         requiredConcepts=required_concepts,
-        similarProblems=_similar_problem_responses_from_candidates(
-            pipeline_result.reranked_candidates,
-            matched_problem_ids=matched_problem_ids,
-        ),
+        similarProblems=_similar_problem_responses_from_evidence(evidence_mapping),
         similarityReason=similarity_reason,
         solvingHints=solving_hints,
         commonMistakes=common_mistakes,
@@ -879,8 +1164,8 @@ def analysis(request: AnalysisRequest, debug: bool = False) -> AnalysisResponse 
         evidenceBundle=evidence_mapping,
         contextPreview=context_preview if debug else None,
         matchedProblem=(
-            pipeline_result.matched_problem.to_mapping()
-            if pipeline_result.matched_problem is not None
+            display_matched_problem.to_mapping()
+            if display_matched_problem is not None
             else None
         ),
     )
@@ -894,30 +1179,24 @@ def _provider_descriptor_response(
     return ProviderDescriptorResponse(**descriptor)
 
 
-def _similar_problem_responses_from_candidates(
-    candidates: Sequence[object],
-    *,
-    matched_problem_ids: set[str],
+def _similar_problem_responses_from_evidence(
+    evidence_mapping: Mapping[str, Any],
 ) -> list[SimilarProblemResponse]:
     responses: list[SimilarProblemResponse] = []
-    for candidate in candidates:
-        candidate_id = str(getattr(candidate, "id", ""))
-        payload = getattr(candidate, "payload", {})
-        payload_map = payload if isinstance(payload, Mapping) else {}
-        source_id_value = payload_map.get("sourceId") or payload_map.get("source_id")
-        source_id = str(source_id_value) if source_id_value else None
-        if candidate_id in matched_problem_ids or source_id in matched_problem_ids:
+    for problem in evidence_mapping.get("similarProblems") or ():
+        if not isinstance(problem, Mapping):
             continue
-        concepts = [str(concept) for concept in getattr(candidate, "concepts", ())]
+        concepts = [str(concept) for concept in problem.get("sharedConcepts") or ()]
+        source_id_value = problem.get("sourceId") or problem.get("source_id")
         responses.append(
             SimilarProblemResponse(
-                source=str(payload_map.get("documentSource") or getattr(candidate, "source", "")),
-                id=candidate_id,
-                sourceId=source_id,
-                title=str(getattr(candidate, "title", "")),
+                source=str(problem.get("source") or ""),
+                id=str(problem.get("id") or ""),
+                sourceId=str(source_id_value) if source_id_value else None,
+                title=str(problem.get("title") or ""),
                 reason=_similar_problem_reason(concepts),
                 sharedConcepts=concepts,
-                answerHint=str(payload_map.get("answer") or ""),
+                answerHint=str(problem.get("answerHint") or ""),
             )
         )
     return responses

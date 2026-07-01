@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import json
+
 import pytest
 
 from backend.app.adapters.in_memory import (
@@ -118,6 +121,24 @@ def _queue_documents() -> tuple[RetrievalDocument, ...]:
             concepts=("BFS", "Queue"),
             problem_type="Graph Traversal",
         ),
+    )
+
+
+def _dynamic_programming_document() -> RetrievalDocument:
+    return RetrievalDocument(
+        id="uva-437",
+        source="UVa",
+        source_id="437",
+        title="The Tower of Babylon",
+        text="Rotate blocks and solve the maximum stack height with LIS-style DP.",
+        answer="Treat each orientation as a block, sort by base area, then run DP.",
+        concepts=("DP", "LIS", "Sorting"),
+        problem_type="Dynamic Programming",
+        solution_hints=(
+            "把每個方塊展開成 3 種可用方向，讓每種方向都能成為底座。",
+            "依底面尺寸排序後，用 dp[i] 表示以第 i 個方向作為頂端時的最大高度。",
+        ),
+        difficulty="Hard",
     )
 
 
@@ -320,6 +341,53 @@ def test_query_understanding_extracts_multilingual_terms_for_unweighted_shortest
         "concept:queue",
         "concept:shortest-path",
     }.issubset(set(mapping["queryVariants"]["graphSeeds"]))
+
+
+@pytest.mark.parametrize("query", ["DP", "dynamic programming", "動態規劃"])
+def test_query_understanding_promotes_dynamic_programming_aliases_to_concept_seed(
+    query: str,
+):
+    understanding = QueryUnderstandingService((_dynamic_programming_document(),)).understand(query)
+
+    assert "Dynamic Programming" in understanding.concept_seeds
+    assert "dynamic programming" in understanding.query_variants["bm25"].lower()
+    assert "dynamic programming" in understanding.query_variants["vector"].lower()
+
+
+def test_query_understanding_keeps_bfs_bare_concept_expansion():
+    understanding = QueryUnderstandingService().understand("BFS")
+
+    assert {"BFS", "Queue", "Visited Array"}.issubset(set(understanding.concept_seeds))
+    assert "breadth first search" in understanding.query_variants["bm25"].lower()
+    assert "breadth first search" in understanding.query_variants["vector"].lower()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("lis", "LIS"),
+        ("  sorting  ", "Sorting"),
+        ("0/1 knapsack", "0/1 Knapsack"),
+    ],
+)
+def test_query_understanding_uses_document_casing_for_unregistered_exact_concepts(
+    query: str,
+    expected: str,
+):
+    document = RetrievalDocument(
+        id="fixture-dp",
+        source="Fixture",
+        source_id="dp",
+        title="Fixture Dynamic Programming Problem",
+        text="Dynamic programming fixture.",
+        answer="Use dynamic programming.",
+        concepts=("LIS", "Sorting", "0/1 Knapsack"),
+        problem_type="Dynamic Programming",
+    )
+
+    understanding = QueryUnderstandingService((document,)).understand(query)
+
+    assert expected in understanding.concept_seeds
 
 
 def test_entity_linking_uses_graph_seeds_for_chinese_problem_query():
@@ -1702,8 +1770,11 @@ def test_context_builder_includes_enriched_candidate_evidence():
     understanding = QueryUnderstandingService().understand("BFS queue shortest path")
     graph_paths = (
         {
-            "nodes": ["input", 42, "leetcode-994"],
-            "relations": ["MENTIONS", 7],
+            "nodes": [
+                {"id": "leetcode-994", "label": "Rotting Oranges", "type": "problem"},
+                {"id": "concept:bfs", "label": "BFS", "type": "algorithm"},
+            ],
+            "relations": ["REQUIRES"],
             "rationale": "linked BFS to Rotting Oranges",
         },
     )
@@ -1727,8 +1798,8 @@ def test_context_builder_includes_enriched_candidate_evidence():
     assert "難度: Medium" in context
     assert "限制: 1 <= m, n <= 10" in context
     assert "圖路徑" in context
-    assert "input -> 42 -> leetcode-994" in context
-    assert "relations=MENTIONS, 7" in context
+    assert "Rotting Oranges -> BFS" in context
+    assert "relations=REQUIRES" in context
     assert "rationale=linked BFS to Rotting Oranges" in context
     assert "演算法證據" in context
     assert "資料結構證據" in context
@@ -1767,6 +1838,447 @@ def test_context_builder_ignores_search_text_noise_from_store_payload():
     assert "Use BFS from all rotten oranges." in context
     assert "Push all rotten oranges first." in context
     assert alias_spam not in context
+
+
+def _dp_retrieval_candidate() -> RetrievalCandidate:
+    return RetrievalCandidate(
+        id="uva-437",
+        title="The Tower of Babylon",
+        source="reranker",
+        score=0.91,
+        text="Solve tower stacking with dynamic programming over sorted block orientations.",
+        concepts=("DP", "LIS", "Sorting"),
+        problem_type="Dynamic Programming",
+        payload={
+            "documentSource": "UVa",
+            "sourceId": "437",
+            "answer": "Generate all block orientations, sort them, then run DP for the tallest stack.",
+            "solutionHints": [
+                "Create three orientations for each block.",
+                "Sort base dimensions before applying LIS-style DP.",
+            ],
+            "difficulty": "Medium",
+            "provenance": {"source": "seed"},
+            "rawChunks": [
+                {
+                    "id": "uva-437:solution:0",
+                    "kind": "solution",
+                    "displayText": "Tower DP solution chunk.",
+                    "score": 0.88,
+                }
+            ],
+            "chunkEvidence": {"available": True, "complete": True},
+            "chunkCount": 1,
+            "rawChunksComplete": True,
+        },
+    )
+
+
+def _bfs_retrieval_candidate() -> RetrievalCandidate:
+    return RetrievalCandidate(
+        id="leetcode-1091",
+        title="Shortest Path in Binary Matrix",
+        source="reranker",
+        score=0.93,
+        text="Use BFS with a queue over eight grid directions.",
+        concepts=("BFS", "Queue", "Visited Array"),
+        problem_type="Graph Traversal",
+        payload={
+            "answer": "Run BFS from the start cell to find the shortest path.",
+            "solutionHints": ["Use a queue and mark each visited cell once."],
+        },
+    )
+
+
+def test_evidence_builder_exact_match_uses_matched_problem_scope_before_unrelated_candidates():
+    dp = _dp_retrieval_candidate()
+    bfs = _bfs_retrieval_candidate()
+    matched = ExactProblemMatch(
+        problem_id="uva-437",
+        title="The Tower of Babylon",
+        source="UVa",
+        source_id="437",
+        match_kind="exact_problem_id",
+        confidence=1.0,
+        candidate=dp,
+    )
+
+    evidence = EvidenceBuilder().build(
+        (bfs, dp),
+        (),
+        matched_problem=matched,
+        query_concepts=("Dynamic Programming",),
+    ).to_mapping()
+
+    assert evidence["matchedProblem"]["id"] == "uva-437"
+    assert evidence["similarProblems"] == []
+    assert "Dynamic Programming" in evidence["algorithmEvidence"]
+    assert "BFS" not in evidence["algorithmEvidence"]
+    assert "Binary Search" not in evidence["algorithmEvidence"]
+    assert "Queue" not in evidence["dataStructureEvidence"]
+    assert "Stack" not in evidence["dataStructureEvidence"]
+    assert "Graph Traversal" not in evidence["patternEvidence"]
+    mistakes = " ".join(evidence["commonMistakes"]).lower()
+    assert all(term not in mistakes for term in ("queue", "binary search", "stack"))
+
+
+def test_evidence_builder_exact_match_displays_only_candidates_with_contained_scope():
+    matched_candidate = _dp_retrieval_candidate()
+    out_of_scope_candidate = RetrievalCandidate(
+        id="uva-10130",
+        title="SuperSale",
+        source="reranker",
+        score=0.89,
+        text="Solve a shopping problem with dynamic programming.",
+        concepts=("DP", "0/1 Knapsack"),
+        problem_type="Dynamic Programming",
+        payload={
+            "answer": "Use a capacity-indexed table.",
+            "commonMistakes": ["SECONDARY_ONLY_MISTAKE"],
+        },
+    )
+    display_candidate = RetrievalCandidate(
+        id="fixture-contained-dp",
+        title="Contained Dynamic Programming Fixture",
+        source="reranker",
+        score=0.88,
+        text="Solve a sorted subsequence problem with dynamic programming.",
+        concepts=("DP", "LIS"),
+        problem_type="Dynamic Programming",
+        payload={"answer": "Use LIS-style dynamic programming."},
+    )
+    matched = ExactProblemMatch(
+        problem_id=matched_candidate.id,
+        title=matched_candidate.title,
+        source="UVa",
+        source_id="437",
+        match_kind="exact_problem_id",
+        confidence=1.0,
+        candidate=matched_candidate,
+    )
+
+    evidence = EvidenceBuilder().build(
+        (out_of_scope_candidate, display_candidate, matched_candidate),
+        (),
+        matched_problem=matched,
+        query_concepts=("BFS", "Queue", "Visited Array"),
+    ).to_mapping()
+
+    assert [problem["id"] for problem in evidence["similarProblems"]] == [
+        "fixture-contained-dp"
+    ]
+    assert evidence["similarProblems"][0]["sharedConcepts"] == [
+        "Dynamic Programming",
+        "LIS",
+    ]
+    assert evidence["matchedProblem"]["sharedConcepts"] == [
+        "Dynamic Programming",
+        "LIS",
+        "Sorting",
+    ]
+    assert evidence["algorithmEvidence"] == ["Dynamic Programming"]
+    assert evidence["patternEvidence"] == ["Dynamic Programming"]
+    assert "0/1 Knapsack" not in evidence["algorithmEvidence"]
+    assert "SECONDARY_ONLY_MISTAKE" not in evidence["commonMistakes"]
+
+
+def test_evidence_builder_non_exact_concept_uses_first_candidate_for_evidence_only():
+    first = replace(
+        _dp_retrieval_candidate(),
+        payload={
+            **_dp_retrieval_candidate().payload,
+            "commonMistakes": ["FIRST_CANDIDATE_MISTAKE"],
+        },
+    )
+    second = RetrievalCandidate(
+        id="uva-10130",
+        title="SuperSale",
+        source="reranker",
+        score=0.87,
+        text="Use dynamic programming for repeated knapsack queries.",
+        concepts=("DP", "0/1 Knapsack"),
+        problem_type="Dynamic Programming",
+        payload={
+            "answer": "Use 0/1 knapsack.",
+            "commonMistakes": ["SECOND_CANDIDATE_MISTAKE"],
+        },
+    )
+
+    evidence = EvidenceBuilder().build(
+        (first, second),
+        (),
+        query_concepts=("Dynamic Programming",),
+    ).to_mapping()
+
+    assert [problem["id"] for problem in evidence["similarProblems"]] == [
+        "uva-437",
+        "uva-10130",
+    ]
+    assert evidence["commonMistakes"] == ["FIRST_CANDIDATE_MISTAKE"]
+
+
+def test_evidence_builder_filters_graph_paths_by_selected_ids_and_active_concepts():
+    matched_candidate = _dp_retrieval_candidate()
+    display_candidate = RetrievalCandidate(
+        id="uva-10130",
+        title="SuperSale",
+        source="reranker",
+        score=0.87,
+        text="Dynamic programming fixture.",
+        concepts=("DP", "LIS"),
+        problem_type="Dynamic Programming",
+    )
+    excluded_candidate = _bfs_retrieval_candidate()
+    matched = ExactProblemMatch(
+        problem_id=matched_candidate.id,
+        title=matched_candidate.title,
+        source="UVa",
+        source_id="437",
+        match_kind="exact_problem_id",
+        confidence=1.0,
+        candidate=matched_candidate,
+    )
+
+    def path(problem_id: str, concept_id: str, concept_label: str) -> dict[str, object]:
+        return {
+            "nodes": [
+                {"id": problem_id, "label": problem_id, "type": "problem"},
+                {"id": concept_id, "label": concept_label, "type": "concept"},
+            ],
+            "relations": [{"type": "REQUIRES"}],
+            "score": 0.9,
+            "rationale": f"{problem_id} uses {concept_label}",
+        }
+
+    evidence = EvidenceBuilder().build(
+        (excluded_candidate, display_candidate, matched_candidate),
+        (
+            path(matched_candidate.id, "concept:dynamic-programming", "Dynamic Programming"),
+            path(display_candidate.id, "concept:dynamic-programming", "Dynamic Programming"),
+            path(display_candidate.id, "concept:bfs", "BFS"),
+            path(excluded_candidate.id, "concept:bfs", "BFS"),
+        ),
+        matched_problem=matched,
+        query_concepts=("BFS",),
+    ).to_mapping()
+
+    assert [
+        (_path_node_ids(graph_path)[0], _path_node_ids(graph_path)[-1])
+        for graph_path in evidence["graphPaths"]
+    ] == [
+        ("uva-437", "concept:dynamic-programming"),
+        ("uva-10130", "concept:dynamic-programming"),
+    ]
+
+
+def test_evidence_builder_strips_store_path_with_out_of_scope_intermediate_concept():
+    evidence = EvidenceBuilder().build(
+        (_dp_retrieval_candidate(),),
+        (
+            {
+                "nodes": [
+                    {"id": "uva-437", "label": "uva-437", "type": "problem"},
+                    {
+                        "id": "concept:dynamic-programming",
+                        "label": "Dynamic Programming",
+                        "type": "concept",
+                    },
+                ],
+                "relations": [{"type": "REQUIRES"}],
+                "storePath": {
+                    "nodes": [
+                        "uva-437",
+                        "concept:bfs",
+                        "concept:dynamic-programming",
+                    ],
+                    "relations": ["REQUIRES", "RELATED_TO"],
+                },
+            },
+        ),
+        query_concepts=("Dynamic Programming",),
+    ).to_mapping()
+
+    graph_path, = evidence["graphPaths"]
+    assert "storePath" not in graph_path
+    assert "bfs" not in json.dumps(graph_path).lower()
+
+
+def test_evidence_builder_without_exact_match_uses_first_query_consistent_candidate():
+    dp = _dp_retrieval_candidate()
+    bfs = _bfs_retrieval_candidate()
+
+    evidence = EvidenceBuilder().build(
+        (bfs, dp),
+        (),
+        query_concepts=("Dynamic Programming",),
+    ).to_mapping()
+
+    assert [problem["id"] for problem in evidence["similarProblems"]] == ["uva-437"]
+    similar_problem = evidence["similarProblems"][0]
+    assert similar_problem["title"] == "The Tower of Babylon"
+    assert similar_problem["source"] == "UVa"
+    assert similar_problem["sourceId"] == "437"
+    assert similar_problem["answerHint"] == (
+        "Generate all block orientations, sort them, then run DP for the tallest stack."
+    )
+    assert similar_problem["solutionHints"] == [
+        "Create three orientations for each block.",
+        "Sort base dimensions before applying LIS-style DP.",
+    ]
+    assert similar_problem["provenance"] == {"source": "seed"}
+    assert similar_problem["chunkCount"] == 1
+    assert similar_problem["rawChunksComplete"] is True
+    assert similar_problem["chunkEvidence"] == {"available": True, "complete": True}
+    assert similar_problem["matchedChunk"] == {
+        "id": "uva-437:solution:0",
+        "kind": "solution",
+        "displayText": "Tower DP solution chunk.",
+        "score": 0.88,
+    }
+    assert "Dynamic Programming" in evidence["algorithmEvidence"]
+    assert "BFS" not in evidence["algorithmEvidence"]
+    assert "Queue" not in evidence["dataStructureEvidence"]
+    assert "Graph Traversal" not in evidence["patternEvidence"]
+
+
+def test_evidence_builder_sanitizes_similar_problem_raw_chunk_payloads():
+    candidate = RetrievalCandidate(
+        id="fixture-problem",
+        title="Fixture Problem",
+        source="hybrid",
+        score=0.91,
+        text="Fixture retrieval candidate.",
+        concepts=("BFS",),
+        problem_type="Graph Traversal",
+        payload={
+            "documentSource": "FixtureSource",
+            "sourceId": "fixture-1",
+            "rawChunks": [
+                {
+                    "id": "fixture-problem:solution:0",
+                    "source": "vector",
+                    "score": 0.82,
+                    "payload": {
+                        "storeCandidateId": "fixture-problem:solution:0",
+                        "kind": "solution",
+                        "displayText": "Safe displayed chunk text.",
+                        "documentSource": "FixtureSource",
+                        "sourceId": "fixture-1",
+                        "title": "Fixture Problem",
+                        "problemType": "Graph Traversal",
+                        "concepts": ["BFS"],
+                        "metadata": {"source": "fixture", "notes": "hidden notes"},
+                        "provenance": {"source": "fixture"},
+                        "promptContext": "hidden prompt context",
+                        "answer": "hidden answer",
+                        "rawAnswer": "hidden raw answer",
+                        "explanation": "hidden explanation",
+                        "notes": "hidden payload notes",
+                        "searchText": "index-only search text",
+                        "text": "fallback free text",
+                    },
+                }
+            ],
+            "chunkCount": 1,
+            "rawChunksComplete": True,
+        },
+    )
+
+    evidence = EvidenceBuilder().build((candidate,), ()).to_mapping()
+
+    raw_chunk = evidence["similarProblems"][0]["rawChunks"][0]
+    assert raw_chunk["id"] == "fixture-problem:solution:0"
+    assert raw_chunk["source"] == "vector"
+    assert raw_chunk["score"] == 0.82
+    assert raw_chunk["payload"]["storeCandidateId"] == "fixture-problem:solution:0"
+    assert raw_chunk["payload"]["kind"] == "solution"
+    assert raw_chunk["payload"]["displayText"] == "Safe displayed chunk text."
+    assert raw_chunk["payload"]["metadata"] == {"source": "fixture"}
+    assert raw_chunk["payload"]["provenance"] == {"source": "fixture"}
+
+    raw_chunk_text = json.dumps(raw_chunk, ensure_ascii=False)
+    for leaked_text in (
+        "hidden prompt context",
+        "hidden answer",
+        "hidden raw answer",
+        "hidden explanation",
+        "hidden notes",
+        "hidden payload notes",
+        "index-only search text",
+        "fallback free text",
+    ):
+        assert leaked_text not in raw_chunk_text
+
+
+def test_evidence_builder_sanitizes_provenance_collections_at_every_level():
+    candidate = replace(
+        _dp_retrieval_candidate(),
+        payload={
+            **_dp_retrieval_candidate().payload,
+            "provenance": [
+                "SCALAR_PROVENANCE_POISON",
+                {
+                    "source": "seed",
+                    "sourceId": "437",
+                    "notes": "NESTED_PROVENANCE_POISON",
+                    "metadata": {
+                        "source": "seed-metadata",
+                        "displayText": "PROVENANCE_METADATA_POISON",
+                    },
+                },
+            ],
+            "rawChunks": [
+                {
+                    "id": "uva-437:solution:0",
+                    "source": "vector",
+                    "score": 0.88,
+                    "payload": {
+                        "kind": "solution",
+                        "displayText": "Safe displayed chunk text.",
+                        "provenance": [
+                            "RAW_CHUNK_SCALAR_POISON",
+                            {
+                                "source": "store",
+                                "sourceId": "437",
+                                "notes": "RAW_CHUNK_NESTED_POISON",
+                                "metadata": {
+                                    "source": "store-metadata",
+                                    "displayText": "RAW_CHUNK_METADATA_POISON",
+                                },
+                            },
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+
+    evidence = EvidenceBuilder().build(
+        (candidate,),
+        (),
+        query_concepts=("Dynamic Programming",),
+    ).to_mapping()
+    similar = evidence["similarProblems"][0]
+
+    assert similar["provenance"] == [
+        {
+            "source": "seed",
+            "sourceId": "437",
+            "metadata": {"source": "seed-metadata"},
+        }
+    ]
+    assert similar["rawChunks"][0]["payload"]["provenance"] == [
+        {
+            "source": "store",
+            "sourceId": "437",
+            "metadata": {"source": "store-metadata"},
+        }
+    ]
+    assert similar["rawChunks"][0]["payload"]["displayText"] == (
+        "Safe displayed chunk text."
+    )
+    serialized = json.dumps(similar, ensure_ascii=False)
+    assert "POISON" not in serialized
 
 
 def test_evidence_builder_selects_matched_problem_display_evidence():
@@ -1920,6 +2432,7 @@ def test_context_builder_includes_matched_problem_separately():
     assert "解題提示: Mark bomb cells before BFS." in context
     assert "相似題" in context
     assert "leetcode-1091 Shortest Path in Binary Matrix" in context
+    assert "Run BFS over eight directions." in context
 
 
 def test_context_builder_omits_similar_problem_section_when_empty():
@@ -2469,7 +2982,7 @@ def test_online_pipeline_marks_exact_problem_graph_result_as_paths_only():
     assert trace["graphSearchStatus"] == "paths_only"
 
 
-def test_matched_problem_pin_does_not_change_similar_problem_ranking():
+def test_matched_problem_scope_filters_similar_problems_without_reordering_remaining():
     matched = ExactProblemMatcher((_uva_document(),)).match(
         QueryUnderstandingService((_uva_document(),)).understand("UVA-10653 - Bombs! NO they are Mines!!")
     )
@@ -2497,18 +3010,18 @@ def test_matched_problem_pin_does_not_change_similar_problem_ranking():
         (unrelated, matched.candidate, weaker),
         (),
         matched_problem=matched,
+        query_concepts=("BFS", "Shortest Path"),
     )
     evidence_map = evidence.to_mapping()
 
     assert evidence_map["matchedProblem"]["id"] == "uva-10653"
     assert [problem["id"] for problem in evidence_map["similarProblems"]] == [
         "leetcode-1091",
-        "leetcode-994",
     ]
     assert "Queue" in evidence_map["dataStructureEvidence"]
     assert "Visited Array" not in evidence_map["dataStructureEvidence"]
     assert "Visited Array" in evidence_map["techniqueEvidence"]
-    assert "State Tracking" in evidence_map["techniqueEvidence"]
+    assert "State Tracking" not in evidence_map["techniqueEvidence"]
     assert evidence_map["commonMistakes"] == [
         "忘記標記 visited。",
         "queue 初始化錯誤，導致起點或距離沒有被正確設定。",

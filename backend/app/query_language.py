@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import re
 
@@ -40,6 +41,13 @@ ALIAS_RULES: tuple[AliasRule, ...] = (
         entity_type="concept",
         zh_terms=("最短步數", "最短路徑"),
         en_terms=("shortest path", "shortest steps"),
+    ),
+    AliasRule(
+        canonical_name="Dynamic Programming",
+        entity_id="concept:dynamic-programming",
+        entity_type="algorithm",
+        zh_terms=("動態規劃",),
+        en_terms=("DP", "dynamic programming"),
     ),
     AliasRule(
         canonical_name="BFS",
@@ -234,6 +242,31 @@ def shared_multilingual_tokens(text: str) -> tuple[str, ...]:
     return _dedupe((*observed_phrase_terms, *ascii_tokens))
 
 
+def normalize_concept_label(name: str) -> str:
+    return " ".join(name.strip().lower().split())
+
+
+def canonical_concept_name(name: str) -> str:
+    normalized = normalize_concept_label(name)
+    if not normalized:
+        return ""
+
+    for rule in ALIAS_RULES:
+        if normalized == normalize_concept_label(rule.canonical_name):
+            return rule.canonical_name
+        if any(normalized == normalize_concept_label(term) for term in (*rule.zh_terms, *rule.en_terms)):
+            return rule.canonical_name
+    return name.strip()
+
+
+def canonical_concept_names(concepts: Sequence[str]) -> tuple[str, ...]:
+    return _dedupe([canonical_concept_name(concept) for concept in concepts])
+
+
+def concepts_overlap(left: Sequence[str], right: Sequence[str]) -> bool:
+    return bool(set(canonical_concept_names(left)) & set(canonical_concept_names(right)))
+
+
 def build_bm25_query(original_query: str, expanded_terms: tuple[str, ...]) -> str:
     return " ".join(_dedupe((original_query, *expanded_terms))).strip()
 
@@ -316,6 +349,10 @@ def _graph_seed_entity_ids(concept_seeds: tuple[str, ...]) -> tuple[str, ...]:
             continue
         entity_ids.append(rule.entity_id)
     return _dedupe(entity_ids)
+
+
+def graph_seed_entity_ids(concept_seeds: Sequence[str]) -> tuple[str, ...]:
+    return _graph_seed_entity_ids(canonical_concept_names(concept_seeds))
 
 
 def _matched_canonical_names(text: str, exact_terms: tuple[str, ...]) -> tuple[str, ...]:

@@ -12,7 +12,15 @@ from ..contracts import RetrievalEvidenceBundle, RetrievalTrace, ScoreMetadata
 from ..providers import DeterministicMockEmbeddingProvider, EmbeddingProvider
 from ..query_language import (
     GRAPH_SEED_ENTITY_REGISTRY,
+    build_bm25_query,
     build_query_language_profile,
+    build_vector_query,
+    canonical_concept_name,
+    canonical_concept_names,
+    concepts_overlap,
+    expand_terms,
+    graph_seed_entity_ids,
+    normalize_concept_label,
     shared_multilingual_tokens,
 )
 from ..stores import (
@@ -249,6 +257,10 @@ class ExactProblemMatch:
         }
 
 
+def is_display_match(matched_problem: ExactProblemMatch | None) -> bool:
+    return matched_problem is not None and matched_problem.match_kind != "partial_title"
+
+
 @dataclass(frozen=True)
 class GraphSearchResult:
     candidates: tuple[RetrievalCandidate, ...]
@@ -299,6 +311,15 @@ class QueryUnderstandingService:
                 for feature in code_features.features
             )
             keywords = tuple(dict.fromkeys((*keywords, *feature_keywords)))
+        concept_seeds = tuple(
+            dict.fromkeys(
+                (
+                    *language_profile.concept_seeds,
+                    *_document_exact_concept_seeds(normalized, self._documents),
+                )
+            )
+        )
+        expanded_terms = expand_terms(language_profile.exact_terms, concept_seeds)
         return QueryUnderstanding(
             original_query=query,
             normalized_query=normalized,
@@ -308,15 +329,37 @@ class QueryUnderstandingService:
             query_language=language_profile.query_language,
             exact_terms=language_profile.exact_terms,
             low_weight_terms=language_profile.low_weight_terms,
-            concept_seeds=language_profile.concept_seeds,
-            expanded_terms=language_profile.expanded_terms,
+            concept_seeds=concept_seeds,
+            expanded_terms=expanded_terms,
             query_variants={
-                "bm25": language_profile.bm25_query,
-                "vector": language_profile.vector_query,
-                "graphSeeds": list(language_profile.graph_seeds),
+                "bm25": build_bm25_query(normalized, expanded_terms),
+                "vector": build_vector_query(
+                    normalized,
+                    language_profile.exact_terms,
+                    concept_seeds,
+                    expanded_terms,
+                ),
+                "graphSeeds": list(graph_seed_entity_ids(concept_seeds)),
             },
             code_features=code_features,
         )
+
+
+def _document_exact_concept_seeds(
+    query: str,
+    documents: Sequence[RetrievalDocument],
+) -> tuple[str, ...]:
+    if not normalize_concept_label(query):
+        return ()
+
+    query_concept = normalize_concept_label(canonical_concept_name(query))
+    seeds: list[str] = []
+    for document in documents:
+        for concept in (*document.concepts, document.problem_type):
+            canonical = canonical_concept_name(concept)
+            if canonical and normalize_concept_label(canonical) == query_concept:
+                seeds.append(canonical)
+    return tuple(dict.fromkeys(seeds))
 
 
 class CodeFeatureExtractor:
@@ -397,11 +440,13 @@ class ExactProblemMatcher:
                 _normalize_alias(f"{document.source}-{document.source_id}"),
                 _normalize_alias(f"{document.source} {document.source_id}"),
             }
+            normalized_problem_id = _normalize_alias(document.id)
+            has_framed_problem_id = f" {normalized_problem_id} " in f" {query} "
             exact_title = _normalize_alias(document.title)
             title_tokens = set(_tokens(document.title))
             query_tokens = set(understanding.keywords)
 
-            if query in exact_problem_ids:
+            if query in exact_problem_ids or has_framed_problem_id:
                 match = ExactProblemMatch(
                     document.id,
                     document.title,
@@ -881,6 +926,112 @@ def _raw_chunk_payload(chunk: JsonMap) -> JsonMap:
     return _mapping(chunk)
 
 
+_SAFE_RAW_CHUNK_FIELDS = {
+    "available",
+    "chunkCount",
+    "chunk_count",
+    "complete",
+    "confidence",
+    "concepts",
+    "displayText",
+    "display_text",
+    "documentSource",
+    "document_source",
+    "id",
+    "kind",
+    "metadata",
+    "missingSources",
+    "missing_sources",
+    "payload",
+    "problemId",
+    "problemType",
+    "problem_id",
+    "problem_type",
+    "provenance",
+    "score",
+    "scoreMeta",
+    "score_meta",
+    "source",
+    "sourceId",
+    "source_id",
+    "sources",
+    "storeCandidateId",
+    "storePayload",
+    "store_candidate_id",
+    "store_payload",
+    "title",
+    "unavailableReason",
+    "unavailable_reason",
+    "weight",
+}
+
+_SAFE_PROVENANCE_FIELDS = {
+    "confidence",
+    "documentSource",
+    "document_source",
+    "id",
+    "kind",
+    "metadata",
+    "score",
+    "source",
+    "sourceId",
+    "source_id",
+    "storeCandidateId",
+    "store_candidate_id",
+    "weight",
+}
+
+_MAPPING_ONLY_DIAGNOSTIC_COLLECTIONS = {"provenance", "rawChunks", "raw_chunks"}
+_NARROW_DIAGNOSTIC_MAPPING_FIELDS = {"provenance", "metadata", "source"}
+
+
+def _safe_raw_chunk_value(value: Any, *, field: str = "") -> Any:
+    if field == "metadata" and not isinstance(value, dict):
+        return {}
+    if isinstance(value, dict):
+        allowed_fields = (
+            _SAFE_PROVENANCE_FIELDS
+            if field in _NARROW_DIAGNOSTIC_MAPPING_FIELDS
+            else _SAFE_RAW_CHUNK_FIELDS
+        )
+        return {
+            key: _safe_raw_chunk_value(item, field=key)
+            for key, item in value.items()
+            if key in allowed_fields
+        }
+    if isinstance(value, (list, tuple)):
+        items = value
+        if field in _MAPPING_ONLY_DIAGNOSTIC_COLLECTIONS:
+            items = tuple(item for item in items if isinstance(item, dict))
+        return [_safe_raw_chunk_value(item, field=field) for item in items]
+    return deepcopy(value)
+
+
+def _safe_provenance(value: object) -> JsonMap | list[JsonMap]:
+    if isinstance(value, dict):
+        return _safe_raw_chunk_value(value, field="provenance")
+    if isinstance(value, (list, tuple)):
+        return [
+            _safe_raw_chunk_value(item, field="provenance")
+            for item in value
+            if isinstance(item, dict)
+        ]
+    return []
+
+
+def _safe_raw_chunks(value: object) -> list[JsonMap]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    chunks: list[JsonMap] = []
+    for chunk in value:
+        if not isinstance(chunk, dict):
+            continue
+        safe_chunk = _safe_raw_chunk_value(chunk)
+        if safe_chunk:
+            chunks.append(safe_chunk)
+    return chunks
+
+
 def _store_payload(payload: JsonMap) -> JsonMap:
     return _mapping(payload.get("storePayload") or payload.get("store_payload"))
 
@@ -1044,6 +1195,73 @@ def _candidate_mapping(candidate: RetrievalCandidate, *, stage: str) -> JsonMap:
     return mapping
 
 
+def _candidate_concept_scope(candidate: RetrievalCandidate) -> tuple[str, ...]:
+    return (*candidate.concepts, candidate.problem_type)
+
+
+def _candidate_matches_concepts(
+    candidate: RetrievalCandidate,
+    query_concepts: Sequence[str],
+) -> bool:
+    return concepts_overlap(_candidate_concept_scope(candidate), query_concepts)
+
+
+def _candidate_scope_within_concepts(
+    candidate: RetrievalCandidate,
+    query_concepts: Sequence[str],
+) -> bool:
+    query_scope = set(canonical_concept_names(query_concepts))
+    candidate_scope = set(canonical_concept_names(_candidate_concept_scope(candidate)))
+    return bool(candidate_scope) and candidate_scope <= query_scope
+
+
+def _scoped_candidate_concepts(
+    candidate: RetrievalCandidate,
+    query_concepts: Sequence[str],
+    *,
+    retain_all: bool,
+) -> tuple[str, ...]:
+    if not query_concepts and not retain_all:
+        return candidate.concepts
+    canonical = canonical_concept_names(candidate.concepts)
+    if retain_all:
+        return canonical
+    query_scope = set(query_concepts)
+    return tuple(concept for concept in canonical if concept in query_scope)
+
+
+def _scoped_candidate_problem_type(
+    candidate: RetrievalCandidate,
+    query_concepts: Sequence[str],
+    *,
+    retain_all: bool,
+) -> str:
+    if not candidate.problem_type:
+        return ""
+    if not query_concepts and not retain_all:
+        return candidate.problem_type
+    canonical = canonical_concept_name(candidate.problem_type)
+    if retain_all or canonical in query_concepts:
+        return canonical
+    return ""
+
+
+def _uses_graph_bfs_evidence(
+    candidates: Sequence[RetrievalCandidate],
+    graph_paths: Sequence[JsonMap],
+) -> bool:
+    if any(concepts_overlap(_candidate_concept_scope(candidate), ("BFS",)) for candidate in candidates):
+        return True
+    evidence_ids = {candidate.id.lower() for candidate in candidates if candidate.id}
+    if not evidence_ids:
+        return False
+    for path in graph_paths:
+        text = json.dumps(path, ensure_ascii=False).lower()
+        if ("bfs" in text or "breadth" in text) and any(evidence_id in text for evidence_id in evidence_ids):
+            return True
+    return False
+
+
 def _chunk_evidence(
     sources: Sequence[str],
     raw_chunks: Sequence[JsonMap],
@@ -1198,64 +1416,174 @@ class EvidenceBuilder:
         graph_paths: Sequence[JsonMap],
         *,
         matched_problem: ExactProblemMatch | None = None,
+        query_concepts: Sequence[str] = (),
     ) -> RetrievalEvidenceBundle:
+        query_concept_labels = canonical_concept_names(query_concepts)
         matched_problem_id = matched_problem.problem_id if matched_problem else ""
-        similar_candidates = [candidate for candidate in candidates if candidate.id != matched_problem_id]
+        if matched_problem is not None:
+            query_concept_labels = canonical_concept_names(
+                (*matched_problem.candidate.concepts, matched_problem.candidate.problem_type)
+            )
+            similar_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.id != matched_problem_id
+                and _candidate_matches_concepts(candidate, query_concept_labels)
+                and _candidate_scope_within_concepts(candidate, query_concept_labels)
+            ]
+            evidence_candidates = [matched_problem.candidate]
+        elif query_concept_labels:
+            similar_candidates = [
+                candidate
+                for candidate in candidates
+                if _candidate_matches_concepts(candidate, query_concept_labels)
+            ]
+            evidence_candidates = list(similar_candidates[:1])
+        else:
+            similar_candidates = [candidate for candidate in candidates if candidate.id != matched_problem_id]
+            evidence_candidates = list(candidates)
+            if matched_problem and all(candidate.id != matched_problem.problem_id for candidate in evidence_candidates):
+                evidence_candidates.append(matched_problem.candidate)
+
         algorithms: list[str] = []
         data_structures: list[str] = []
         patterns: list[str] = []
         techniques: list[str] = []
-        evidence_candidates = list(candidates)
-        if matched_problem and all(candidate.id != matched_problem.problem_id for candidate in evidence_candidates):
-            evidence_candidates.append(matched_problem.candidate)
         for candidate in evidence_candidates:
-            for concept in candidate.concepts:
-                kind = _classify_concept(concept)
+            retain_all = bool(matched_problem_id and candidate.id == matched_problem_id)
+            for concept_label in _scoped_candidate_concepts(
+                candidate,
+                query_concept_labels,
+                retain_all=retain_all,
+            ):
+                kind = _classify_concept(concept_label)
                 if kind == "algorithm":
-                    _append_unique(algorithms, concept)
+                    _append_unique(algorithms, concept_label)
                 elif kind == "data_structure":
-                    _append_unique(data_structures, concept)
+                    _append_unique(data_structures, concept_label)
                 elif kind == "technique":
-                    _append_unique(techniques, concept)
-            if candidate.problem_type:
-                _append_unique(patterns, candidate.problem_type)
+                    _append_unique(techniques, concept_label)
+            problem_type = _scoped_candidate_problem_type(
+                candidate,
+                query_concept_labels,
+                retain_all=retain_all,
+            )
+            if problem_type:
+                _append_unique(patterns, problem_type)
 
         common_mistakes: list[str] = []
         for candidate in evidence_candidates:
             for mistake in _common_mistakes_from_candidate(candidate):
                 _append_unique(common_mistakes, mistake)
-        if not common_mistakes:
+        if not common_mistakes and (
+            not query_concept_labels or _uses_graph_bfs_evidence(evidence_candidates, graph_paths)
+        ):
             common_mistakes = _fallback_common_mistakes()
 
         matched_problem_mapping = matched_problem.to_mapping() if matched_problem else None
         if matched_problem_mapping is not None:
             matched_problem_mapping.update(
                 {
+                    "sharedConcepts": list(
+                        _scoped_candidate_concepts(
+                            matched_problem.candidate,
+                            query_concept_labels,
+                            retain_all=True,
+                        )
+                    ),
+                    "problemType": _scoped_candidate_problem_type(
+                        matched_problem.candidate,
+                        query_concept_labels,
+                        retain_all=True,
+                    ),
                     "problemCard": _candidate_problem_card(matched_problem.candidate),
                     "statement": _candidate_statement(matched_problem.candidate),
                     "solution": _candidate_solution(matched_problem.candidate),
                 }
             )
 
+        similar_problem_mappings: list[JsonMap] = []
+        for candidate in similar_candidates:
+            scoped_concepts = _scoped_candidate_concepts(
+                candidate,
+                query_concept_labels,
+                retain_all=False,
+            )
+            scoped_problem_type = _scoped_candidate_problem_type(
+                candidate,
+                query_concept_labels,
+                retain_all=False,
+            )
+            similar_problem = {
+                "id": candidate.id,
+                "title": candidate.title,
+                "score": round(candidate.score, 6),
+                "sharedConcepts": list(scoped_concepts),
+                "problemType": scoped_problem_type,
+                "answerHint": str(candidate.payload.get("answer") or ""),
+                "solutionHints": list(
+                    _tuple_of_str(candidate.payload.get("solutionHints"))
+                ),
+                "difficulty": str(candidate.payload.get("difficulty") or ""),
+                "constraints": list(_tuple_of_str(candidate.payload.get("constraints"))),
+                "source": str(
+                    candidate.payload.get("documentSource") or candidate.source
+                ),
+                "sourceId": str(
+                    candidate.payload.get("sourceId")
+                    or candidate.payload.get("source_id")
+                    or ""
+                ),
+                "problemCard": _candidate_problem_card(candidate),
+                "matchedChunk": _best_matched_chunk(candidate),
+            }
+            for payload_key, evidence_key in (
+                ("provenance", "provenance"),
+                ("sources", "sources"),
+                ("rawChunks", "rawChunks"),
+                ("chunkEvidence", "chunkEvidence"),
+                ("chunkCount", "chunkCount"),
+                ("rawChunksComplete", "rawChunksComplete"),
+                ("rerankerScore", "rerankerScore"),
+            ):
+                if payload_key in candidate.payload:
+                    if payload_key == "rawChunks":
+                        similar_problem[evidence_key] = _safe_raw_chunks(
+                            candidate.payload[payload_key]
+                        )
+                    elif payload_key == "provenance":
+                        similar_problem[evidence_key] = _safe_provenance(
+                            candidate.payload[payload_key]
+                        )
+                    else:
+                        similar_problem[evidence_key] = deepcopy(
+                            candidate.payload[payload_key]
+                        )
+            similar_problem_mappings.append(similar_problem)
+
+        allowed_graph_candidate_ids = tuple(
+            dict.fromkeys(
+                candidate.id
+                for candidate in (*evidence_candidates, *similar_candidates)
+                if candidate.id
+            )
+        )
+        active_graph_concepts = query_concept_labels or canonical_concept_names(
+            tuple(
+                concept
+                for candidate in (*evidence_candidates, *similar_candidates)
+                for concept in _candidate_concept_scope(candidate)
+            )
+        )
+        scoped_graph_paths = _scope_graph_paths(
+            graph_paths,
+            allowed_graph_candidate_ids,
+            active_graph_concepts,
+        )
+
         return RetrievalEvidenceBundle(
-            similar_problems=[
-                {
-                    "id": candidate.id,
-                    "title": candidate.title,
-                    "score": round(candidate.score, 6),
-                    "sharedConcepts": list(candidate.concepts),
-                    "answerHint": candidate.payload.get("answer", ""),
-                    "solutionHints": list(_tuple_of_str(candidate.payload.get("solutionHints"))),
-                    "difficulty": str(candidate.payload.get("difficulty") or ""),
-                    "constraints": list(_tuple_of_str(candidate.payload.get("constraints"))),
-                    "source": str(candidate.payload.get("documentSource") or ""),
-                    "sourceId": str(candidate.payload.get("sourceId") or ""),
-                    "problemCard": _candidate_problem_card(candidate),
-                    "matchedChunk": _best_matched_chunk(candidate),
-                }
-                for candidate in similar_candidates
-            ],
-            graph_paths=[dict(path) for path in graph_paths],
+            similar_problems=similar_problem_mappings,
+            graph_paths=list(scoped_graph_paths),
             algorithm_evidence=algorithms,
             data_structure_evidence=data_structures,
             pattern_evidence=patterns,
@@ -1391,7 +1719,11 @@ class OnlineQueryPipeline:
             and understanding.input_kind in {"cpp", "python"}
         ):
             matched_problem = None
-        linked_entities = EntityLinkingService().link(understanding, matched_problem=matched_problem)
+        display_matched_problem = matched_problem if is_display_match(matched_problem) else None
+        linked_entities = EntityLinkingService().link(
+            understanding,
+            matched_problem=display_matched_problem,
+        )
         vector_candidates = VectorSearchService(
             self._documents,
             self._embedding_provider,
@@ -1410,7 +1742,7 @@ class OnlineQueryPipeline:
         ).search(
             linked_entities,
             top_k=max(top_k * 2, top_k),
-            matched_problem=matched_problem,
+            matched_problem=display_matched_problem,
         )
         fusion_inputs = {
             "vector_candidates": vector_candidates if mode in {"hybrid", "vector"} else (),
@@ -1429,10 +1761,10 @@ class OnlineQueryPipeline:
         )
         target_problem_ids = (
             (
-                matched_problem.problem_id,
-                matched_problem.source_id,
+                display_matched_problem.problem_id,
+                display_matched_problem.source_id,
             )
-            if matched_problem is not None
+            if display_matched_problem is not None
             else ()
         ) + tuple(candidate.id for candidate in reranked)
         pruned_graph_paths = _prune_graph_paths(
@@ -2185,6 +2517,52 @@ def _normalize_graph_path_concept_key(value: str) -> str:
     return " ".join(normalized.split())
 
 
+def _scope_graph_paths(
+    paths: Sequence[JsonMap],
+    allowed_problem_ids: Sequence[str],
+    active_concepts: Sequence[str],
+) -> tuple[JsonMap, ...]:
+    allowed_ids = {str(problem_id) for problem_id in allowed_problem_ids if problem_id}
+    active_scope = set(canonical_concept_names(active_concepts))
+    if not allowed_ids or not active_scope:
+        return ()
+
+    scoped: list[JsonMap] = []
+    for path in paths:
+        if _graph_path_problem_id(path) not in allowed_ids:
+            continue
+        path_concepts = canonical_concept_names(
+            (
+                _graph_path_target_label(path),
+                _normalize_graph_path_concept_key(_graph_path_target_concept_id(path)),
+            )
+        )
+        if active_scope.isdisjoint(path_concepts):
+            continue
+        scoped_path = dict(path)
+        store_path = scoped_path.get("storePath")
+        if isinstance(store_path, dict):
+            store_nodes = store_path.get("nodes")
+            if isinstance(store_nodes, (list, tuple)):
+                store_concepts = set(
+                    canonical_concept_names(
+                        tuple(
+                            _normalize_graph_path_concept_key(str(node))
+                            for node in store_nodes
+                            if str(node) not in allowed_ids
+                            and _graph_layer_for_node(str(node))
+                            not in {"source", "chunk"}
+                        )
+                    )
+                )
+            else:
+                store_concepts = set()
+            if not store_concepts.issubset(active_scope):
+                scoped_path.pop("storePath")
+        scoped.append(scoped_path)
+    return tuple(scoped)
+
+
 def _looks_like_problem_id(value: str) -> bool:
     lowered = str(value).lower()
     return lowered.startswith(("leetcode-", "uva-"))
@@ -2278,7 +2656,7 @@ def _slug(value: str) -> str:
 
 
 def _classify_concept(name: str) -> str:
-    lowered = name.lower()
+    lowered = canonical_concept_name(name).lower()
     if lowered in {"bfs", "dfs", "dijkstra", "dynamic programming", "binary search"}:
         return "algorithm"
     if lowered in {"visited array", "visited set", "state tracking"}:
