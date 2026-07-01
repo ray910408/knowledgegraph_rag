@@ -17,14 +17,22 @@
 
 ```mermaid
 flowchart TD
-  A["CPE / LeetCode 題庫資料"] --> B["資料清理與標準化"]
-  B --> C["Chunking<br/>題目卡 / 題敘 / 限制 / 範例 / 提示 / 解法"]
-  B --> D["Entity 與 Relation 抽取"]
-  B --> E["Raw / Processed JSON"]
-  C --> F["Embedding Model<br/>bge-m3"]
-  F --> G["Vector DB<br/>Qdrant"]
-  D --> H["Knowledge Graph 建構"]
-  H --> I["Graph DB<br/>Neo4j"]
+  A["CPE / LeetCode 題庫資料"] --> R["Raw JSON<br/>data/raw/*.json"]
+  R --> B["資料清理與標準化"]
+  B --> P["Processed Problems JSON<br/>data/processed/problems.json"]
+
+  P --> C["Chunking<br/>題目卡 / 題敘 / 限制 / 範例 / 提示 / 解法"]
+  C --> CJ["Chunks JSON<br/>data/processed/chunks.json"]
+  CJ --> BM["BM25 Index<br/>data/processed/bm25_index.json"]
+  CJ --> E["Embedding Model<br/>bge-m3"]
+  E --> V["Vector DB<br/>Qdrant"]
+
+  P --> X["Entity 與 Relation 抽取"]
+  X --> ER["Entities / Relations JSON<br/>entities.json / relations.json"]
+  ER --> K["Knowledge Graph 建構"]
+  K --> G["Graph DB<br/>Neo4j"]
+
+  P --> M["Manifest / Metadata<br/>data/processed/manifest.json"]
 ```
 
 建庫指令：
