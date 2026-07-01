@@ -182,10 +182,21 @@ def test_app_renders_unsupported_response_as_abstention_only():
 
     assert branch_index < normal_trace_index
     assert "response.abstentionReason" in unsupported_branch
+    assert "response.similarProblems" not in unsupported_branch
+    assert "response.evidenceBundle" not in unsupported_branch
     assert "MatchedProblemPanel" not in unsupported_branch
     assert "RetrievalPanel" not in unsupported_branch
     assert "EvidenceBundlePanel" not in unsupported_branch
     assert 'response?.status !== "unsupported"' in source
+
+
+def test_app_does_not_special_case_dp_uva_437_or_sample_hint_filtering():
+    source = APP_TSX.read_text(encoding="utf-8")
+
+    assert 'inputText === "DP"' not in source
+    assert '"uva-437"' not in source
+    assert "The Tower of Babylon" not in source
+    assert "solutionHints.filter" not in source
 
 
 def test_app_renders_graph_path_scoring_metadata():

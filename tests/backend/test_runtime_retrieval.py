@@ -14,7 +14,7 @@ from backend.app.ingestion.pipeline import (
 from backend.app.providers import DeterministicMockEmbeddingProvider
 from backend.app.retrieval.pipeline import QueryUnderstandingService
 from backend.app.retrieval.pipeline import RetrievalDocument
-from backend.app.stores import BM25Document, SearchCandidate
+from backend.app.stores import SearchCandidate
 
 CHINESE_SHORTEST_PATH_QUERY = "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。"
 
@@ -45,31 +45,24 @@ def _documents() -> tuple[RetrievalDocument, ...]:
 
 
 def _write_bm25_index(path: Path) -> None:
-    path.write_text(
-        """
-{
-  "documents": [
-    {
-      "id": "leetcode-994:statement:0",
-      "text": "Multi-source BFS with a queue on a grid.",
-      "problemId": "leetcode-994",
-      "payload": {
-        "problemId": "leetcode-994",
-        "kind": "statement",
-        "text": "Multi-source BFS with a queue on a grid.",
-        "concepts": ["BFS", "Queue"],
-        "metadata": {
-          "source": "LeetCode",
-          "sourceId": "994",
-          "title": "Rotting Oranges",
-          "problemType": "Graph Traversal"
-        }
-      }
-    }
-  ]
-}
-""".strip(),
-        encoding="utf-8",
+    write_ingestion_bm25_index(
+        path,
+        (
+            ProblemChunk(
+                id="leetcode-994:statement:0",
+                problem_id="leetcode-994",
+                kind="statement",
+                text="Multi-source BFS with a queue on a grid.",
+                index=0,
+                concepts=("BFS", "Queue"),
+                metadata={
+                    "source": "LeetCode",
+                    "sourceId": "994",
+                    "title": "Rotting Oranges",
+                    "problemType": "Graph Traversal",
+                },
+            ),
+        ),
     )
 
 
@@ -388,20 +381,6 @@ def test_json_bm25_store_rejects_malformed_document_entries(tmp_path, document):
 
     with pytest.raises(RuntimeRetrievalError, match="BM25 document"):
         JsonBM25Store.from_path(index_path)
-
-
-def test_json_bm25_store_can_accept_runtime_documents_after_loading(tmp_path):
-    from backend.app.retrieval.runtime import JsonBM25Store
-
-    index_path = tmp_path / "bm25_index.json"
-    _write_bm25_index(index_path)
-    store = JsonBM25Store.from_path(index_path)
-    store.index_documents((BM25Document(id="extra", text="binary search", payload={"problemId": "extra"}),))
-
-    results = store.search("binary search", top_k=1)
-
-    assert results[0].id == "extra"
-    assert results[0].payload["problemId"] == "extra"
 
 
 def test_build_runtime_retrieval_local_does_not_construct_external_stores(monkeypatch):

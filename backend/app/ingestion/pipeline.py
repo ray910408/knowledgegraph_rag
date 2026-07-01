@@ -154,11 +154,6 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _metadata_difficulty(metadata: dict[str, Any]) -> str | None:
-    value = metadata.get("difficulty")
-    return None if value is None else str(value)
-
-
 def _build_chunks(problems: tuple[RawProblem, ...]) -> tuple[ProblemChunk, ...]:
     router = ChunkingRouter()
     chunks: list[ProblemChunk] = []

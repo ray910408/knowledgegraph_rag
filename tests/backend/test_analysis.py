@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +13,8 @@ from backend.app.contracts import RetrievalTrace
 from backend.app.main import (
     AnalysisRequest,
     _analysis_paths_from_graph_trace,
-    _similar_problem_responses_from_candidates,
+    _filter_retrieval_trace,
+    _retrieval_problem_type,
     app,
 )
 from backend.app.providers import DeterministicMockEmbeddingProvider
@@ -57,35 +59,328 @@ def _similar_problem_ids(payload: dict[str, object]) -> set[str]:
     }
 
 
-def test_similar_problem_responses_keep_source_ids_optional_and_accept_aliases():
-    def candidate(candidate_id: str, payload: dict[str, str]) -> RetrievalCandidate:
-        return RetrievalCandidate(
-            id=candidate_id,
-            title=candidate_id,
-            source="LeetCode",
-            score=0.8,
-            text="BFS shortest path",
-            concepts=("BFS",),
-            problem_type="Graph Traversal",
-            payload=payload,
-        )
+def _id_source_pairs(records: list[dict[str, object]]) -> list[tuple[str, str]]:
+    return [
+        (str(record["id"]), str(record.get("sourceId") or ""))
+        for record in records
+        if record.get("id") is not None
+    ]
 
-    responses = _similar_problem_responses_from_candidates(
-        (
-            candidate("leetcode-matched", {}),
-            candidate("leetcode-source-matched", {"sourceId": "matched-source"}),
-            candidate("leetcode-no-source-id", {}),
-            candidate("leetcode-snake-case-source", {"source_id": "snake-source"}),
-        ),
-        matched_problem_ids={"leetcode-matched", "matched-source"},
+
+def _response_text(payload: dict[str, object]) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def test_analysis_preserves_candidate_source_and_snake_case_source_id():
+    candidate = RetrievalCandidate(
+        id="qdrant-123",
+        title="Qdrant BFS Candidate",
+        source="qdrant",
+        score=0.9,
+        text="BFS shortest path",
+        concepts=("BFS",),
+        problem_type="Graph Traversal",
+        payload={
+            "source_id": "123",
+            "answer": "Use BFS.",
+            "solutionHints": ("Use a queue.",),
+        },
+    )
+    understanding = QueryUnderstanding(
+        original_query="BFS",
+        normalized_query="BFS",
+        input_kind="problem",
+        intent="problem_search",
+        keywords=("bfs",),
+        concept_seeds=("BFS",),
+    )
+    trace = RetrievalTrace(
+        query_understanding=understanding.to_mapping(),
+        vector_candidates=[candidate.to_mapping()],
+        fusion_scores=[candidate.to_mapping()],
+        reranker_scores=[candidate.to_mapping()],
+    )
+    result = OnlineQueryResult(
+        query_understanding=understanding,
+        linked_entities=(),
+        matched_problem=None,
+        vector_candidates=(candidate,),
+        graph_candidates=(),
+        bm25_candidates=(),
+        fused_candidates=(candidate,),
+        reranked_candidates=(candidate,),
+        graph_paths=(),
+        trace=trace,
     )
 
-    assert [response.id for response in responses] == [
-        "leetcode-no-source-id",
-        "leetcode-snake-case-source",
+    class StaticPipeline:
+        def run(self, query: str, *, mode: str = "hybrid", top_k: int = 5) -> OnlineQueryResult:
+            return result
+
+    app.state.runtime_retrieval = RuntimeRetrieval(
+        backend="stores",
+        pipeline=StaticPipeline(),  # type: ignore[arg-type]
+        candidate_sources={},
+        provider_sources={},
+    )
+
+    response = TestClient(app).post("/api/analysis", json={"input": "BFS"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    evidence_problem = payload["evidenceBundle"]["similarProblems"][0]
+    top_level_problem = payload["similarProblems"][0]
+    assert (evidence_problem["source"], evidence_problem["sourceId"]) == ("qdrant", "123")
+    assert (top_level_problem["source"], top_level_problem["sourceId"]) == ("qdrant", "123")
+
+
+def test_filter_retrieval_trace_prefers_canonical_id_over_source_id_collision():
+    trace = {
+        "vectorCandidates": [
+            {"id": "uva-437", "source": "UVa", "sourceId": "437"},
+            {"id": "leetcode-437", "source": "UVa", "sourceId": "437"},
+            {"source": "UVa", "sourceId": "437"},
+        ]
+    }
+    evidence = {
+        "matchedProblem": {"id": "uva-437", "source": "UVa", "sourceId": "437"},
+        "similarProblems": [],
+    }
+
+    filtered = _filter_retrieval_trace(trace, evidence)
+
+    assert [candidate.get("id") for candidate in filtered["vectorCandidates"]] == [
+        "uva-437",
+        None,
     ]
-    assert responses[0].sourceId is None
-    assert responses[1].sourceId == "snake-source"
+
+
+def test_filter_retrieval_trace_preserves_scoped_payload_diagnostics():
+    matched_chunk = {
+        "id": "uva-437:solution:0",
+        "kind": "solution",
+        "displayText": "Dynamic Programming display",
+        "score": 0.9,
+    }
+    similar_chunk = {
+        "id": "uva-10130:solution:0",
+        "kind": "solution",
+        "displayText": "0/1 Knapsack display",
+        "score": 0.8,
+    }
+    trace = {
+        "vectorCandidates": [
+            {
+                "id": "uva-437",
+                "source": "vector",
+                "concepts": ["DP", "LIS", "Sorting"],
+                "problemType": "Dynamic Programming",
+                "payload": {
+                    "documentSource": "UVa",
+                    "sourceId": "437",
+                    "answer": "Safe DP answer",
+                    "solutionHints": ["Safe DP hint"],
+                    "promptContext": "Do not leak matched prompt context.",
+                    "metadata": {
+                        "source": "store",
+                        "notes": "Do not leak matched notes.",
+                    },
+                    "rawChunks": [matched_chunk],
+                    "chunkEvidence": [matched_chunk],
+                    "rawChunksComplete": True,
+                    "chunkCount": 1,
+                    "concepts": ["DP", "LIS", "Sorting"],
+                    "problemType": "Dynamic Programming",
+                },
+            },
+            {
+                "id": "uva-10130",
+                "source": "vector",
+                "concepts": ["DP", "0/1 Knapsack"],
+                "problemType": "Dynamic Programming",
+                "payload": {
+                    "documentSource": "UVa",
+                    "sourceId": "10130",
+                    "answer": "0/1 Knapsack answer",
+                    "solutionHints": ["Use 0/1 Knapsack"],
+                    "rawAnswer": "Do not leak raw answer.",
+                    "explanation": "Do not leak explanation.",
+                    "rawChunks": [similar_chunk],
+                    "chunkEvidence": [similar_chunk],
+                    "rawChunksComplete": True,
+                    "chunkCount": 1,
+                    "concepts": ["DP", "0/1 Knapsack"],
+                    "problemType": "Dynamic Programming",
+                },
+            },
+        ]
+    }
+    evidence = {
+        "matchedProblem": {
+            "id": "uva-437",
+            "source": "UVa",
+            "sourceId": "437",
+            "sharedConcepts": ["Dynamic Programming", "LIS", "Sorting"],
+            "problemType": "Dynamic Programming",
+        },
+        "similarProblems": [
+            {
+                "id": "uva-10130",
+                "source": "UVa",
+                "sourceId": "10130",
+                "sharedConcepts": ["Dynamic Programming"],
+            }
+        ],
+        "algorithmEvidence": ["Dynamic Programming"],
+    }
+
+    filtered = _filter_retrieval_trace(trace, evidence)
+
+    matched_payload = filtered["vectorCandidates"][0]["payload"]
+    assert matched_payload["rawChunks"] == [matched_chunk]
+    assert matched_payload["chunkEvidence"] == [matched_chunk]
+    assert matched_payload["rawChunksComplete"] is True
+    assert matched_payload["chunkCount"] == 1
+    assert matched_payload["metadata"] == {"source": "store"}
+    assert (matched_payload["documentSource"], matched_payload["sourceId"]) == ("UVa", "437")
+    assert "answer" not in matched_payload
+    assert "solutionHints" not in matched_payload
+    assert "promptContext" not in matched_payload
+
+    similar_payload = filtered["vectorCandidates"][1]["payload"]
+    assert similar_payload["rawChunks"] == [
+        {"id": "uva-10130:solution:0", "kind": "solution", "score": 0.8}
+    ]
+    assert similar_payload["chunkEvidence"] == [
+        {"id": "uva-10130:solution:0", "kind": "solution", "score": 0.8}
+    ]
+    assert similar_payload["rawChunksComplete"] is True
+    assert similar_payload["chunkCount"] == 1
+    assert (similar_payload["documentSource"], similar_payload["sourceId"]) == (
+        "UVa",
+        "10130",
+    )
+    assert "answer" not in similar_payload
+    assert "solutionHints" not in similar_payload
+    assert "rawAnswer" not in similar_payload
+    assert "explanation" not in similar_payload
+
+
+def test_filter_retrieval_trace_sanitizes_nested_provenance_collections():
+    trace = {
+        "vectorCandidates": [
+            {
+                "id": "uva-437",
+                "source": "vector",
+                "concepts": ["DP"],
+                "problemType": "Dynamic Programming",
+                "payload": {
+                    "documentSource": "UVa",
+                    "sourceId": "437",
+                    "provenance": [
+                        "TRACE_SCALAR_PROVENANCE_POISON",
+                        {
+                            "source": "seed",
+                            "sourceId": "437",
+                            "notes": "TRACE_NESTED_PROVENANCE_POISON",
+                            "metadata": {
+                                "source": "seed-metadata",
+                                "displayText": "TRACE_METADATA_POISON",
+                            },
+                        },
+                    ],
+                    "rawChunks": [
+                        {
+                            "id": "uva-437:solution:0",
+                            "source": "vector",
+                            "score": 0.9,
+                            "payload": {
+                                "kind": "solution",
+                                "displayText": "Safe trace display text.",
+                                "provenance": [
+                                    "TRACE_RAW_CHUNK_SCALAR_POISON",
+                                    {
+                                        "source": "store",
+                                        "sourceId": "437",
+                                        "notes": "TRACE_RAW_CHUNK_NESTED_POISON",
+                                        "metadata": {
+                                            "source": "store-metadata",
+                                            "displayText": "TRACE_RAW_CHUNK_METADATA_POISON",
+                                        },
+                                    },
+                                ],
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+    evidence = {
+        "matchedProblem": {
+            "id": "uva-437",
+            "source": "UVa",
+            "sourceId": "437",
+            "sharedConcepts": ["Dynamic Programming"],
+            "problemType": "Dynamic Programming",
+        },
+        "similarProblems": [],
+        "algorithmEvidence": ["Dynamic Programming"],
+    }
+
+    filtered = _filter_retrieval_trace(trace, evidence)
+    payload = filtered["vectorCandidates"][0]["payload"]
+
+    assert payload["provenance"] == [
+        {
+            "source": "seed",
+            "sourceId": "437",
+            "metadata": {"source": "seed-metadata"},
+        }
+    ]
+    raw_chunk = payload["rawChunks"][0]
+    assert raw_chunk["payload"]["provenance"] == [
+        {
+            "source": "store",
+            "sourceId": "437",
+            "metadata": {"source": "store-metadata"},
+        }
+    ]
+    assert raw_chunk["payload"]["displayText"] == "Safe trace display text."
+    assert "POISON" not in json.dumps(payload, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("scoped_problem_type", "expected"),
+    [
+        ("Dynamic Programming", "Dynamic Programming"),
+        ("", ""),
+    ],
+)
+def test_retrieval_problem_type_does_not_fall_back_to_raw_reranked_candidates(
+    scoped_problem_type: str,
+    expected: str,
+):
+    unrelated = RetrievalCandidate(
+        id="leetcode-1091",
+        title="Shortest Path in Binary Matrix",
+        source="reranker",
+        score=0.99,
+        text="Use BFS.",
+        concepts=("BFS",),
+        problem_type="Graph Traversal",
+    )
+
+    class PipelineResult:
+        matched_problem = None
+        reranked_candidates = (unrelated,)
+
+    evidence = {
+        "patternEvidence": [],
+        "similarProblems": [{"problemType": scoped_problem_type}],
+    }
+
+    assert _retrieval_problem_type(PipelineResult(), evidence) == expected
 
 
 def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
@@ -164,7 +459,16 @@ def test_problem_statement_returns_graph_traversal_bfs_analysis_contract():
 
     assert "\u7121\u6b0a\u5716\u4e2d\u627e\u6700\u77ed\u6b65\u6578" in payload["similarityReason"]
     assert "BFS \u627e\u6700\u77ed\u6b65\u6578" in payload["similarityReason"]
-    assert any("\u5148\u5efa\u5716" in hint and "BFS" in hint for hint in payload["solvingHints"])
+    first_evidence_problem = payload["evidenceBundle"]["similarProblems"][0]
+    assert {"BFS", "Queue"}.issubset(set(first_evidence_problem["sharedConcepts"]))
+    assert payload["solvingHints"] == first_evidence_problem["solutionHints"]
+    hints_text = "\n".join(payload["solvingHints"])
+    assert "Queue" in hints_text
+    assert any(
+        expected in hints_text
+        for expected in ("\u8d77\u9ede", "\u5ea7\u6a19", "\u8ddd\u96e2")
+    )
+    assert "\u5148\u5efa\u5716" not in hints_text
     assert any("visited" in mistake and "\u5fd8\u8a18\u6a19\u8a18" in mistake for mistake in payload["commonMistakes"])
     assert any("queue \u521d\u59cb\u5316\u932f\u8aa4" in mistake for mistake in payload["commonMistakes"])
 
@@ -795,17 +1099,17 @@ def test_analysis_problem_id_only_preserves_exact_id_retrieval():
     )
     no_concept_similar_candidate = RetrievalCandidate(
         id="leetcode-2000",
-        title="Reverse Prefix of Word",
+        title="Grid Path Without Concepts",
         source="LeetCode",
         score=0.72,
-        text="Reverse the prefix of a word up to a target character.",
+        text="Find a path through an unweighted grid.",
         concepts=(),
-        problem_type="String",
+        problem_type="Graph Traversal",
         payload={
             "documentSource": "LeetCode",
             "sourceId": "2000",
-            "answer": "Find the index and reverse that prefix.",
-            "solutionHints": ("Use slicing.",),
+            "answer": "Traverse the grid from the start cell.",
+            "solutionHints": ("Use the graph structure.",),
             "difficulty": "Easy",
             "constraints": (),
         },
@@ -999,7 +1303,7 @@ def test_analysis_exact_problem_query_exposes_consistent_matched_problem():
 
     response = client.post(
         "/api/analysis?debug=true",
-        json={"input": "UVA-10653 - Bombs! NO they are Mines!!"},
+        json={"input": "UVA-10653 - Bombs! NO they are Mines!!", "topK": 10},
     )
 
     assert response.status_code == 200
@@ -1083,7 +1387,7 @@ def test_analysis_uses_canonical_problem_ids_across_response_surfaces():
         json={
             "input": "UVA-10653 - Bombs! NO they are Mines!!",
             "mode": "hybrid",
-            "topK": 3,
+            "topK": 10,
         },
     )
 
@@ -1101,32 +1405,25 @@ def test_analysis_uses_canonical_problem_ids_across_response_surfaces():
     top_level_ids = canonical_ids(top_level_similar_problems, id_key="id")
 
     assert all("sourceId" in problem for problem in top_level_similar_problems)
-    top_level_source_ids = {
-        str(problem["sourceId"])
-        for problem in top_level_similar_problems
-        if problem.get("sourceId")
-    }
-    top_level_id_source_id_pairs = {
-        (str(problem["id"]), str(problem["sourceId"]))
-        for problem in top_level_similar_problems
-        if problem.get("id") and problem.get("sourceId")
-    }
-    assert top_level_source_ids
-    assert "10653" not in top_level_source_ids
-    assert {"uva-10653", "10653"}.isdisjoint(top_level_ids)
+    top_level_id_source_id_pairs = _id_source_pairs(top_level_similar_problems)
 
     evidence_similar_problems = payload["evidenceBundle"]["similarProblems"]
     evidence_ids = canonical_ids(evidence_similar_problems, id_key="id")
-    evidence_id_source_id_pairs = {
-        (str(problem["id"]), str(problem["sourceId"]))
-        for problem in evidence_similar_problems
-        if problem.get("id") and problem.get("sourceId")
-    }
+    evidence_id_source_id_pairs = _id_source_pairs(
+        payload["evidenceBundle"]["similarProblems"]
+    )
     reranker_ids = canonical_ids(
         payload["retrievalTrace"]["rerankerScores"],
         id_key="id",
     )
     assert top_level_id_source_id_pairs == evidence_id_source_id_pairs
+    assert {"uva-10653", "10653"}.isdisjoint(
+        {
+            value
+            for pair in top_level_id_source_id_pairs
+            for value in pair
+        }
+    )
     assert top_level_ids < reranker_ids
     assert payload["matchedProblem"]["id"] == "uva-10653"
     assert "uva-10653" not in evidence_ids
@@ -1138,7 +1435,7 @@ def test_analysis_exact_source_id_vector_query_preserves_retrieval_similar_probl
 
     response = client.post(
         "/api/analysis",
-        json={"input": "10653", "mode": "vector"},
+        json={"input": "10653", "mode": "vector", "topK": 10},
     )
 
     assert response.status_code == 200
@@ -1211,7 +1508,7 @@ def test_analysis_unknown_unrelated_input_abstains_without_graph_or_bfs_evidence
     assert payload["similarityReason"] == ""
     assert (
         payload["abstentionReason"]
-        == "No programming problem, code, concept, or retrieval evidence was detected."
+        == "未偵測到程式題、程式碼、演算法概念或可靠檢索證據。"
     )
     assert payload["requiredConcepts"] == []
     assert payload["similarProblems"] == []
@@ -1296,29 +1593,246 @@ def test_analysis_weak_traversal_vocabulary_still_abstains(input_text: str):
     assert payload["similarProblems"] == []
     assert payload["evidencePaths"] == []
     assert payload["evidenceBundle"]["graphPaths"] == []
+    assert (
+        payload["abstentionReason"]
+        == "輸入超出目前支援範圍，請提供程式題敘、題號、程式碼或已知演算法概念。"
+    )
     assert payload["matchedProblem"] is None
     assert "BFS" not in response.text
 
 
-def test_analysis_recognized_unsupported_concept_abstains_consistently():
+@pytest.mark.parametrize("query", ["DP", "dynamic programming", "動態規劃"])
+def test_analysis_dynamic_programming_concept_query_returns_dp_candidates(query: str):
     client = TestClient(app)
 
-    response = client.post("/api/analysis?debug=true", json={"input": "dynamic programming"})
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": query, "mode": "hybrid", "topK": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload.get("abstentionReason") is None
+
+    understanding = payload["retrievalTrace"]["queryUnderstanding"]
+    assert "Dynamic Programming" in understanding["conceptSeeds"]
+    assert "concept:dynamic-programming" in understanding["queryVariants"]["graphSeeds"]
+
+    concept_names = _required_concept_names(payload)
+    assert "Dynamic Programming" in concept_names
+    assert {"BFS", "Queue"}.isdisjoint(concept_names)
+
+    top_level_pairs = _id_source_pairs(payload["similarProblems"])
+    evidence_pairs = _id_source_pairs(payload["evidenceBundle"]["similarProblems"])
+    assert top_level_pairs == evidence_pairs
+    assert ("uva-437", "437") in top_level_pairs
+    assert all(problem_id != "leetcode-1091" for problem_id, _ in top_level_pairs)
+
+    text = _response_text(payload)
+    assert "Shortest Path in Binary Matrix" not in text
+    assert "Rotting Oranges" not in text
+
+
+def test_analysis_uva_437_top_level_similar_problems_match_filtered_evidence_pairs():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "uva-437", "mode": "hybrid", "topK": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["matchedProblem"]["id"] == "uva-437"
+    assert _id_source_pairs(payload["similarProblems"]) == _id_source_pairs(
+        payload["evidenceBundle"]["similarProblems"]
+    )
+    assert {
+        ("uva-437", "437"),
+    }.isdisjoint(_id_source_pairs(payload["similarProblems"]))
+
+
+@pytest.mark.parametrize("top_k", [5, 10])
+def test_analysis_uva_437_exact_match_does_not_include_bfs_evidence_or_required_concepts(top_k: int):
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={"input": "uva-437", "mode": "hybrid", "topK": top_k},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["matchedProblem"]["id"] == "uva-437"
+    assert payload["matchedProblem"]["sourceId"] == "437"
+
+    concept_names = _required_concept_names(payload)
+    matched_scope = {"Dynamic Programming", "LIS", "Sorting"}
+    assert concept_names <= matched_scope
+    assert "Dynamic Programming" in concept_names
+    assert {
+        "BFS",
+        "Queue",
+        "Visited Array",
+        "0/1 Knapsack",
+        "Hash Map",
+        "Frequency Counting",
+        "Binary Search",
+        "Stack",
+    }.isdisjoint(concept_names)
+
+    evidence = payload["evidenceBundle"]
+    assert "Dynamic Programming" in evidence["algorithmEvidence"]
+    assert "BFS" not in evidence["algorithmEvidence"]
+    assert "Queue" not in evidence["dataStructureEvidence"]
+    assert "Graph Traversal" not in evidence["patternEvidence"]
+
+    blocked_ids = {"leetcode-1091", "leetcode-994"}
+    top_level_pairs = _id_source_pairs(payload["similarProblems"])
+    evidence_pairs = _id_source_pairs(evidence["similarProblems"])
+    assert top_level_pairs == evidence_pairs
+    assert blocked_ids.isdisjoint({problem_id for problem_id, _ in top_level_pairs})
+    assert all(
+        set(problem["sharedConcepts"]) <= matched_scope
+        for problem in evidence["similarProblems"]
+    )
+
+    text = _response_text(payload)
+    assert "Shortest Path in Binary Matrix" not in text
+    assert "Rotting Oranges" not in text
+    assert "Fire!" not in text
+
+    scoped_surface_text = _response_text(
+        {
+            "topLevelAnswerHints": [
+                problem["answerHint"] for problem in payload["similarProblems"]
+            ],
+            "solvingHints": payload["solvingHints"],
+            "similarProblems": payload["similarProblems"],
+            "evidenceBundle": payload["evidenceBundle"],
+            "contextPreview": payload["contextPreview"],
+            "retrievalTrace": payload["retrievalTrace"],
+        }
+    )
+    for unrelated_text in (
+        "BFS",
+        "Queue",
+        "Visited Array",
+        "Graph Traversal",
+    ):
+        assert unrelated_text not in scoped_surface_text
+
+
+def test_analysis_mixed_bfs_uva_437_query_keeps_tower_scope_across_public_evidence():
+    response = TestClient(app).post(
+        "/api/analysis?debug=true",
+        json={"input": "BFS uva-437", "mode": "hybrid", "topK": 10},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["matchedProblem"]["id"] == "uva-437"
+    assert "Dynamic Programming" in _required_concept_names(payload)
+    assert payload["evidenceBundle"]["graphPaths"]
+
+    public_evidence = {
+        "problemType": payload["problemType"],
+        "requiredConcepts": payload["requiredConcepts"],
+        "similarProblems": payload["similarProblems"],
+        "solvingHints": payload["solvingHints"],
+        "commonMistakes": payload["commonMistakes"],
+        "evidencePaths": payload["evidencePaths"],
+        "evidenceBundle": payload["evidenceBundle"],
+        "contextPreview": payload["contextPreview"],
+    }
+    public_text = json.dumps(public_evidence, ensure_ascii=False)
+    for foreign_term in (
+        "BFS",
+        "Queue",
+        "Visited Array",
+        "Graph Traversal",
+        "Hash Map",
+        "Frequency Counting",
+        "0/1 Knapsack",
+        "Binary Search",
+        "Stack",
+        "Hardwood Species",
+    ):
+        assert foreign_term not in public_text
+
+
+def test_analysis_partial_title_match_is_diagnostic_only():
+    response = TestClient(app).post(
+        "/api/analysis?debug=true",
+        json={"input": "BFS shortest path", "mode": "hybrid", "topK": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload.get("matchedProblem") is None
+    assert payload["evidenceBundle"]["matchedProblem"] is None
+    assert payload["retrievalTrace"]["matchedProblem"]["matchKind"] == "partial_title"
+    assert "直接命中" not in payload["similarityReason"]
+
+
+def test_analysis_sample_input_uses_one_coherent_shortest_path_hint_set():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/analysis?debug=true",
+        json={
+            "input": "給定一張無權圖與起點、終點，請找出從起點到終點的最短步數。需要說明該使用哪些演算法與資料結構。"
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert {"BFS", "Queue"}.issubset(_required_concept_names(payload))
+    assert payload["solvingHints"]
+    assert (
+        payload["solvingHints"]
+        == payload["evidenceBundle"]["similarProblems"][0]["solutionHints"]
+    )
+
+    hints_text = "\n".join(payload["solvingHints"])
+    assert "Queue" in hints_text
+    assert any(
+        expected in hints_text
+        for expected in ("先檢查起點", "座標與距離")
+    )
+    assert "先建圖" not in hints_text
+    assert not any(
+        unrelated in hints_text
+        for unrelated in (
+            "火",
+            "fire_time",
+            "油田",
+            "DFS",
+            "腐爛",
+            "Rotting",
+            "Fire!",
+            "Oil Deposits",
+        )
+    )
+
+
+def test_analysis_scope_abstention_reason_is_zh_hant():
+    response = TestClient(app).post(
+        "/api/analysis?debug=true",
+        json={"input": "queue lunch", "mode": "hybrid", "topK": 3},
+    )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "unsupported"
-    assert payload["inputKind"] == "unknown"
-    assert payload["problemType"] == ""
-    assert payload["similarityReason"] == ""
-    assert payload["abstentionReason"] == "This input is outside the supported graph traversal analysis scope."
-    assert payload["requiredConcepts"] == []
-    assert payload["similarProblems"] == []
-    assert payload["matchedProblem"] is None
-    assert payload["retrievalTrace"]["entityLinking"] == []
-    assert payload["retrievalTrace"]["vectorCandidates"] == []
-    assert payload["retrievalTrace"]["fusionScores"] == []
-    assert payload["evidenceBundle"]["similarProblems"] == []
+    assert (
+        payload["abstentionReason"]
+        == "輸入超出目前支援範圍，請提供程式題敘、題號、程式碼或已知演算法概念。"
+    )
 
 
 def test_analysis_supported_framed_problem_reference_keeps_supported_fields():

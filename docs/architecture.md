@@ -80,6 +80,8 @@ flowchart TD
 - `GraphSearchService`：沿用 `graphSeeds` 與 exact matched problem 的 graph expansion 規則。
 - `HybridFusionService`、`Reranker`、`EvidenceBuilder`、`ContextBuilder`、`LLMResponseGenerator`：負責融合、重排、證據整理與最終輸出。
 
+回應層必須把 `EvidenceBuilder` 的輸出視為 display/evidence scope 的權威來源。`ContextBuilder`、頂層 `similarProblems`、`requiredConcepts` 與 `solvingHints` 都要使用 filtered evidence mapping，不得在 `EvidenceBuilder` scope selection 後直接讀 raw reranked candidates，避免 exact query 或 concept-only query 繼承無關概念、常見錯誤或提示。
+
 ### ContextBuilder guardrail
 
 - `ContextBuilder` 只能消費 evidence lane 與 display/context lane 的欄位，例如 `answerHint`、`solutionHints`、`difficulty`、`constraints`、`graphPaths` 與其他乾淨顯示文字。
@@ -103,7 +105,7 @@ flowchart TD
 graph path 需要同時保留穩定 public shape 與底層 store path：
 
 - `nodes` / `relations`：穩定的 public shape，預設為 `problem -> source -> target`。
-- `storePath.nodes` / `storePath.relations`：保留 Neo4j 原始路徑，方便 debug。
+- `storePath.nodes` / `storePath.relations`：只在 public evidence scope 內保留 Neo4j 原始路徑；若路徑含 scope 外概念，public response 會省略 `storePath`，完整 raw path 只留在 debug trace。
 - `graphPathOperation`：`candidate_retrieval` 或 `exact_expansion`。
 - `pathScoring.strategy`：目前固定 `weighted_layered_path_v1`。
 - `scoreMeta`：明確標記 graph path 分數不可直接與 BM25 / vector / reranker 分數混比。

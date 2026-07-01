@@ -3,16 +3,16 @@ from __future__ import annotations
 from ..contracts import ProblemChunk, RawProblem
 from .structured_problem import StructuredProblemChunker
 
+SUPPORTED_RUNTIME_TYPES = ("structured_problem",)
+
 
 class ChunkingRouter:
     def __init__(self) -> None:
-        self._chunkers = {
-            "structured_problem": StructuredProblemChunker(),
-        }
+        self._structured_problem_chunker = StructuredProblemChunker()
 
     @staticmethod
     def supported_runtime_types() -> tuple[str, ...]:
-        return ("structured_problem",)
+        return SUPPORTED_RUNTIME_TYPES
 
     def chunk_problem(
         self,
@@ -20,7 +20,6 @@ class ChunkingRouter:
         *,
         runtime_type: str = "structured_problem",
     ) -> tuple[ProblemChunk, ...]:
-        chunker = self._chunkers.get(runtime_type)
-        if chunker is None:
+        if runtime_type not in SUPPORTED_RUNTIME_TYPES:
             raise ValueError(f"unsupported chunking runtime type: {runtime_type}")
-        return chunker.chunk(problem)
+        return self._structured_problem_chunker.chunk(problem)
